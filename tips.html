@@ -1,0 +1,65 @@
+<html>
+<head> 
+  <meta charset="utf-8"> 
+  <!-- Other head elements --> 
+</head>
+
+<table>
+<tr><td align="center"><h3>Tips and Tricks</h3></td></tr>
+<tr><td>
+    <table border="1" cellpadding="3">
+    <tr><th style="width:180px;" align="left"><b>Getting Started</b></th><th  style="width:500px;">&nbsp;</th></tr>
+    <tr><td>&nbsp;</td><td>To get started, <b>insert nodes</b> on either the 'Exists' or 'Forall' side by clicking anywhere in the canvas but not in the top menu bar or very close to the vertical dividing line. A node will be created at the click point.</td></tr>
+    <tr><td><b>Selecting Nodes and Edges</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>select a node or group of nodes</b>, click (or cmd+click/shift+click) on the already-created node(s).</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>select an undirected edge</b>, click anywhere within the edge.</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>select a directed edge</b>, click anywhere within the arrowhead.</td></tr>
+     <tr><td>&nbsp;</td><td>To <b>select a group of nodes and/or edges</b>, either select the nodes and edges individually, or click and drag your mouse to see a selection rectangle. When you release your mouse, everything within the selection rectangle will be selected.</td></tr>
+    <tr><td><b>Creating Edges</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>create an undirected edge</b> between nodes, select the nodes and press the 'e' key (for Edge).</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>create a directed edge</b> between nodes, select the nodes and press the 'd' key (for Directed edge). The edge will be directed from the first node selected to the second node selected.</td></tr>
+    <tr><td>&nbsp;</td><td>NOTE: <b>all edges in a graph must be of the same type</b>, in other words, either all edges must be directed or all edges must be undirected.</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>switch the direction</b> of one or more directed edges, selected the edge(s) and press the 'r' key (for Reverse).</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>add a directed edge(s) in the opposite direction</b> from a pre-existing edge(s) (thereby, effectively, making the edge undirected), select the edge(s) and press the 'R' key (for Reverse++).</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>create a self-loop</b>, right click on a node and select Create a Self-Loop. You may then choose which side to draw the self-loop on. Once a self-loop has been created, you can move it to another side by using the same context menu. Delete a self-loop by clicking on the edge and deleitng it just like any other edge.</td></tr>
+    <tr><td><b>Deleting Nodes and Edges</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>delete a node or group of nodes</b>, select them and then either select Delete from the Edit menu or press the Delete key.</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>delete an edge or group of edges</b>, select them and then either select Delete from the Edit menu or press the Delete key.</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>delete a collection of nodes and edges at the same time</b></collection>, simply select such each member of the collection, and either pressthe Delete key or select Delete from the Edit menu.</td></tr>
+    <tr><td><b>Cut, Copy and Paste</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>Any group of selected objects may be <b>cut or copied</b> by selecting the appropriate item from the Edit menu. (Keyboard shortcuts are not available in all browsers.)</td></tr>
+    <tr><td>&nbsp;</td><td>If you cut or copy objects on both sides, the target of a <b>paste action</b> will be both sides. If you cut or copy from just one side, you <b>must indicate the target side to paste to</b>. If you use a keyboard shortcut to paste (again, not available on all browsers), the target will be whichever side your mouse is on.  If you choose to paste from the Edit menu, you must first select either the 'Exists Side' or 'Forall Side' buttons to indicate your preferred target.</td></tr>
+    <tr><td><b>Grouping and Moving</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>Once you have selected a set of nodes (possibly including some edges), you can <b>group the nodes into one unit</b> by selecting the Group item from the Edit menu (or by pressing the 'g' key). A grey colored rectangle with "handles" will then be drawn, indicating which nodes have been grouped together. </td></tr>
+    <tr><td>&nbsp;</td><td>A set of grouped nodes can be <b>moved as a unit</b> by grabbing onto the grouping rectangle and moving the nodes to a locaiton of your choosing on the canvas. Nodes cannot be moved from one side of the board to the other. </td></tr>
+    <tr><td><b>Iconized Groups</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>Once you have grouped a set of nodes and edges together, you can turn them into what we call an <b>Iconized Group</b>. Iconized groups must be completely disconnected from any other nodes on the canvas. This is useful if you want to have several copies of the same group of nodes and edges and display things more compactly and mnemonically. An icon will replace the set of nodes in the graphical display. Iconized groups can be copied and pasted anywhere on the canvas. Iconized groups can be created in different shapes, sizes and colors. They can also be given labels of up to 3 chracters.</td></tr>
+    <tr><td>&nbsp;</td><td>Iconoized groups can be connected to other nodes or iconized groups by clicking and typing 'e' (if edges are undirected) or 'd' (if edges are directed). This will form what we call an <b>Ultra Edge</b> between iconized group and any other node or iconized group that is also selected. This means that every node in the iconized group will be connected via an edge to all the other selected objects. Ultra edges are displayed with bold dashed lines.</td></tr>
+    <tr><td>&nbsp;</td><td>Iconized groups can be included within other iconized groups.</td></tr>
+    <tr><td>&nbsp;</td><td>Once an iconized group has been created it can be further edited right clicking and selecting <b>Change Icon/Label</b>, if just this is required, or by selecting <b>Edit Group Contents</b>, if that is required. The latter option is a good way to recall what the contents of an iconized group are if you have forgotten.</td></tr>
+    <tr><td>&nbsp;</td><td>An iconized group can be expanded to its original contents by right clicking and selecting <b>Explode Iconized Group</b>.</td></tr>
+    <tr><td><b>Ordering Nodes</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>indicate that nodes should be ordered</b>, right click on an empty space in the canvas and select Order Nodes. By default, nodes are not ordered. </td></tr>
+    <tr><td>&nbsp;</td><td>There is also a context menu option to <b>Display Node Ordering</b>. By default, nodes are ordered in the order in which they were created.</td></tr>
+    <tr><td>&nbsp;</td><td>Once orderings are displayed, they can be <b>edited directly</b>. There is also an option to <b>order the set of selected nodes in left to right order</b>. Node orderings are with respect to the other nodes on the same side.</td></tr>
+    <tr><td><b>Assigning Constants</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>assign a constant</b> to a node, right click on the node, select Assign a Constant. and input the desired constant.</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>delete a constant</b> that has been assigned to a node, right click on the node, and select Remove Constant.</td></tr>
+    <tr><td><b>Inserting a Grid of Nodes</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>You may <b>insert a rectangular array of nodes</b> by right clicking at the location where you would like the nodes added, and then selecting Insert Grid of Nodes.... You may connect nodes to their L1 (vertical and horizontal) neighbors, or not, as desired.</td></tr>
+    <tr><td><b>Inserting a Cycle of Nodes</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>You may <b>insert a cycle of nodes</b> by right clicking at the location where you would like the cycle added, and then selecting Insert Cycle of Nodes.... You are able to specify the number of nodes in the cycle as well as the height and width of the cycle in pixels. You can connect neighboring node by directed or undirected edges.</td></tr>
+    <tr><td><b>Saving to/Retreiving from a File</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>You can <b>save the current state</b> of you work, or <b>pickup where you left off</b> in a prior session by selecting, respectively Save... or Open... from the File menu.</td></tr>
+    <tr><td><b>Starting a Game and Game Play</b></td><td>&nbsp;</td></tr>
+    <tr><td>&nbsp;</td><td>To <b>start a game</b>, select <b>Start a Game</b> from the Game menu. You must have nodes on both sides of the board to start a game. You can request that the computer play the role of Spoiler, Duplicator, both, or neither.</td></tr>
+    <tr><td>&nbsp;</td><td>When it is your turn, click on the node you wish to play on to register your move. If you wish to play within an iconized group, click on the iconized group and the iconized group will be expanded in a separate window. Click on the node within the separate window and the click on the Confirm button.</td></tr>
+    <tr><td>&nbsp;</td><td>Move numbers are indicated with different colored boxes atop the nodes or iconized groups.</td></tr>
+    <tr><td>&nbsp;</td><td>If you have requested that the computer play for either the Spoiler, Duplicator or both, various aspects of the computer's analysis will be dislayed in the lower left corner of the canvas, including when the computer has determined that one of the player's has a forced win.</td></tr>
+    <tr><td>&nbsp;</td><td>You can undo or redo a move by clicking on the associated undo and redo buttons beside the Rounds Thus Far display at the top of the canvas.</td></tr>
+    <tr><td>&nbsp;</td><td>You can get a view of the game, including a <b>one-level explosion</b> of any iconized groups by typing Command + 'e'.</td></tr>
+    <tr><td>&nbsp;</td><td>You can get a view of the game, including a <b>complete (all-level) explosion</b> of any iconized groups by typing Command + 'E'.</td></tr>
+    </table>
+</td></tr>
+</table>
+</html>

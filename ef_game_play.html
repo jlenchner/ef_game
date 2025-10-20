@@ -1,0 +1,4615 @@
+
+<!DOCTYPE html>
+<html>
+<body>
+
+<div id="contextMenu">
+    <ul>
+    </ul>
+</div>
+
+<nav id="topMenu"></nav>
+
+<canvas id="mainCanvas"></canvas> 
+<script>
+
+document.body.style.overflow = 'hidden'; //prevents coordinate problems when scrolling
+
+
+class Rectangle {
+  constructor(x, y, width, height) {
+    this.x = x;
+    this.y = y;
+    this.width = width;
+    this.height = height;
+  }
+}
+
+nodes = new Set()
+edges = new Set()
+iconizedGroups = new Set() 
+ultraEdges = new Set()
+
+all_nodes = new Set()  //includes nodes nested in iconizedGroups
+all_edges = new Set() //includes nodes nested in iconizedGroups
+
+innerIconizedGroups = new Set()
+
+selected_nodes = new Set()
+selected_edges = new Set()
+selected_ultraEdges = new Set()
+selected_iconizedGroups = new Set()
+
+copied_nodes = new Set()
+copied_edges = new Set()
+
+active_grouping_rectangle = undefined
+exists_side_grouping_control_point = undefined //if the grouping box spans both sides, this is the x-coord of the right-most node on the left side
+forall_side_grouping_control_point = undefined //if the grouping box spans both sides, this is the x-coord of the left-most node on the right side
+GROUPING_BOX_BUFFER = 15        //number of pixels beyond the most extreme nodes to draw bounding rectangle
+
+const NODE_DRAW_RADIUS = 5
+const NODE_CLICK_TOLERANCE = 7  //how close to center of node you have to be to count as having clicked on it
+const EDGE_CLICK_TOLERANCE = 20  //how close to center of edge you have to be to count as having clicked on it
+const EDGE_WIDTH = 2
+
+const ARROW_OFFSET_PCT = 0.60  //On directed edges, how far from from-node1 to node2 to place arrow.
+                               //SHOULD NOT BE USED DIRECTLY!! Call getSmartArrowOffsetPct(edge) instead.
+const ARROW_HEAD_LENGTH = 15   //Pixels of headlength in a directed edge arrow
+
+const EXISTS_SIDE = -1
+const FORALL_SIDE = -2
+const BOTH_SIDES = -3
+
+//TOP_BUFFER = 30  //Clicks in this region are ignored
+NAV_BAR_MARGIN = 30
+TOP_BUFFER = 2   //Clicks above here are ignored (does not count nav bar pixels)
+BOTTOM_BUFFER = 5  //Clicks below here are ignored
+
+node_id_counter = 1
+nodes_are_ordered = false  //the default
+orderings_are_being_displayed = false
+const ORDERING_BOX_OFFSET_X = -15   //determines how the ordering boxes are offset from the node centers
+const ORDERING_BOX_OFFSET_Y = NAV_BAR_MARGIN + 15
+const CONSTANT_BOX_OFFSET_X = 10
+const CONSTANT_BOX_OFFSET_Y = NAV_BAR_MARGIN - 22 // NAV_BAR_MARGIN -18 
+const CONSTANT_BOX_WIDTH = 22
+const CONSTANT_BOX_HEIGHT = 15
+const CONSTANT_FLAGPOLL_TOP_OFFSET = CONSTANT_BOX_OFFSET_Y + 7
+node_id_to_inputBox_map = new Map()
+const NO_ORDER = -999999
+node_id_to_constantBox_map = new Map()
+
+iconizedGroup_id_counter = 1
+
+const INFINITE = 999999
+
+constants_in_use_on_left = new Set()
+constants_in_use_on_right = new Set()
+
+CANVAS_WIDTH = window.screen.width  
+CANVAS_HEIGHT = window.screen.height 
+
+const canvas = document.getElementById('mainCanvas');
+canvas.width = CANVAS_WIDTH
+canvas.height = CANVAS_HEIGHT
+const ctx = canvas.getContext('2d');
+
+
+DIVIDING_LINE_BUFFER = 10  //Clicks in this region are ignored (does not count dividing line width)
+DIVIDING_LINE_LOC = CANVAS_WIDTH/2
+
+DISK_COLOR = "black"
+EDGE_COLOR = "black"
+NODE_SELECT_COLOR = "red"
+UNSELECT_COLOR = "white"
+EDGE_SELECT_COLOR = "lime"
+
+TYPE_UNDIRECTED = -1
+TYPE_DIRECTED = -2
+
+edge_type = TYPE_UNDIRECTED //the default
+
+ctx.imageSmoothingEnabled = false; 
+
+isDragging = false   //is user dragging the mouse
+cutPending = false   //set to true if there is a cut pending rather than a copy
+
+const SPOILER_MOVE = 0
+const DUPLICATOR_MOVE = 1
+round_counter = 1
+whose_move = SPOILER_MOVE
+move_queue = []
+redo_queue = []
+pre_move_queue = []  //these are just "moves" on constants
+last_side_played = BOTH_SIDES //not relevant at the start of the game
+num_rounds = INFINITE
+
+const MOVE_BG_COLORS = ["red", "blue", "green", "yellow", "black"]
+const MOVE_TEXT_COLORS = ["white", "white", "white", "black", "white"]
+
+drawDividingLine()
+
+const contextMenuDiv = document.getElementById('contextMenu');
+const contextMenuList = contextMenuDiv.querySelector('ul');
+
+SELF_LOOP_RADIUS = 15   //radius in pixels for drawing self-loops
+//directions for drawing self-loops
+DIR_NONE = -1
+DIR_UP = 0
+DIR_RIGHT = 1
+DIR_DOWN = 2
+DIR_LEFT = 3
+
+spoiler_win_announcmenet_has_been_made = false
+spoiler_round_annoucement_made_at = -1
+duplicator_win_announcmenet_has_been_made = false
+duplicator_round_annoucement_made_at = -1
+
+const menuItems = ["I"];  //no real menu bar
+const nav = document.getElementById("topMenu");
+const ul = document.createElement("ul");
+menuItems.forEach(itemText => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.textContent = itemText;
+    li.appendChild(a);
+    ul.appendChild(li);
+});
+nav.appendChild(ul);
+
+function getZoomLevel() {
+    return Math.round(window.devicePixelRatio * 100);
+  }
+
+function scaleNodeToZoomLevel(parentZoomLevel, ourZoomLevel, node) {  //This is not working properly. Scales to uniform position on the screen regardless of zoom
+    if(parentZoomLevel != ourZoomLevel) {
+        node.x *= (parentZoomLevel/ourZoomLevel)
+        node.y *= (parentZoomLevel/ourZoomLevel)
+    }
+}
+
+function recenterIcoGroupContents(icoGroup) {
+    let topMost = canvas.height
+    let leftMost = canvas.width
+    let bottomMost = 0
+    let rightMost = 0
+    for(let node of icoGroup.inner_nodes) {
+        if(node.x < leftMost) {
+            leftMost = node.x
+        }
+         if(node.x > rightMost) {
+            rightMost = node.x
+        }
+        if(node.y < topMost) {
+            topMost = node.y
+        }
+        if(node.y > bottomMost) {
+            bottomMost = node.y
+        }
+    }
+    for(let i of icoGroup.inner_iconizedGroups) {
+        if(i.x < leftMost) {
+            leftMost = i.x
+        }
+         if(i.x > rightMost) {
+            rightMost = i.x
+        }
+        if(i.y < topMost) {
+            topMost = i.y
+        }
+        if(i.y > bottomMost) {
+            bottomMost = i.y
+        }
+    }
+    prev_center_x = (leftMost + rightMost)/2
+    prev_center_y = (topMost + bottomMost)/2
+
+    for(let node of icoGroup.inner_nodes) {
+        node.x += (icoGroup.x - prev_center_x)
+        node.y += (icoGroup.y - prev_center_y)
+    }
+    for(let i of icoGroup.inner_iconizedGroups) {
+        i.x += (icoGroup.x - prev_center_x)
+        i.y += (icoGroup.y - prev_center_y)
+        trueInnerIcoGroup = fetchById(i.id, innerIconizedGroups) 
+        if(trueInnerIcoGroup != i) {
+            trueInnerIcoGroup.x += (icoGroup.x - prev_center_x)
+            trueInnerIcoGroup.y += (icoGroup.y - prev_center_y)
+        }
+    }
+}
+
+function fetchById(id, setOfObjects) {
+    for(let ob of setOfObjects) {
+        if(ob.id == id) {
+            return ob
+        }
+    }
+
+    return undefined
+}
+
+//This is causing the parenting problem!!
+function createExplodedGraph(nodes, edges, iconizedGroups, ultraEdges, innerIconizedGroups) {
+    all_OneLevelNodes = new Set(nodes)  //accumulate these
+    all_OneLevelEdges = new Set(edges)  //accumulate these
+    all_OneLevelUltraEdges = new Set()  //just the new ones
+    all_OneLevelIconizedGroups = new Set() //just the new ones
+
+    for(let icoGroup of iconizedGroups) {
+        recenterIcoGroupContents(icoGroup) 
+        let coerced_inner_nodes = new Set()
+        for(let node of icoGroup.inner_nodes) {
+            node.parent = icoGroup
+            console.log("Node with id " + node.id + " has been given a parent!")
+            coerced_inner_nodes.add(coerceToNode(node))
+        }
+        let coerced_inner_edges = new Set()
+        for(let edge of icoGroup.inner_edges) {
+            edge = coerceToEdge(edge)
+            edge.node1 = fetchById(edge.node1.id, coerced_inner_nodes)
+            edge.node2 = fetchById(edge.node2.id, coerced_inner_nodes)
+            edge.node1.edges.add(edge)
+            edge.node2.edges.add(edge)
+            coerced_inner_edges.add(coerceToEdge(edge))
+        }
+        let coerced_inner_iconizedGroups = new Set()
+        for(let i of icoGroup.inner_iconizedGroups) {
+            let trueIcoGroup = fetchById(i.id, innerIconizedGroups) //these are already coerced
+            trueIcoGroup.parent = icoGroup
+            coerced_inner_iconizedGroups.add(trueIcoGroup)
+        }
+        let coerced_inner_ultraEdges = new Set()  
+        for(let ultraEdge of icoGroup.inner_ultraEdges) {
+            ultraEdge = coerceToUltraEdge(ultraEdge)
+            if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+                ultraEdge.obj1 = fetchById(ultraEdge.obj1.id, coerced_inner_iconizedGroups)
+            }
+            else {
+                ultraEdge.obj1 = fetchById(ultraEdge.obj1.id, coerced_inner_nodes)
+            }
+            ultraEdge.obj1.ultraEdges.add(ultraEdge)
+            if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+                ultraEdge.obj2 = fetchById(ultraEdge.obj2.id, coerced_inner_iconizedGroups)
+            }
+            else {
+                ultraEdge.obj2 = fetchById(ultraEdge.obj2.id, coerced_inner_nodes)
+            }
+            ultraEdge.obj2.ultraEdges.add(ultraEdge)
+            coerced_inner_ultraEdges.add(coerceToUltraEdge(ultraEdge))
+        }
+        
+        all_OneLevelNodes = all_OneLevelNodes.union(coerced_inner_nodes)
+        all_OneLevelEdges = all_OneLevelEdges.union(coerced_inner_edges)
+        all_OneLevelUltraEdges = all_OneLevelUltraEdges.union(coerced_inner_ultraEdges)
+        all_OneLevelIconizedGroups = all_OneLevelIconizedGroups.union(coerced_inner_iconizedGroups)
+    }
+    for(let ultraEdge of ultraEdges) {
+        if(!ultraEdge.obj1.hasOwnProperty("num_sides")) {  //obj2 must be an icoGroup
+            for(let node of ultraEdge.obj2.inner_nodes) {
+                let edge = new Edge(ultraEdge.obj1, node)
+                all_OneLevelEdges.add(edge)
+            }
+            for(let icoGroup of ultraEdge.obj2.inner_iconizedGroups) {
+                let trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups) 
+                let u = new UltraEdge(ultraEdge.obj1, trueIcoGroup)
+                all_OneLevelUltraEdges.add(u)
+            }
+        }
+        else if(!ultraEdge.obj2.hasOwnProperty("num_sides")) {  //obj1 must be an icoGroup
+            for(let node of ultraEdge.obj1.inner_nodes) {
+                let edge = new Edge(node, ultraEdge.obj2)
+                all_OneLevelEdges.add(edge)
+            }
+            for(let icoGroup of ultraEdge.obj1.inner_iconizedGroups) {
+                let trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups)
+                let u = new UltraEdge(trueIcoGroup, ultraEdge.obj2)
+                all_OneLevelUltraEdges.add(u)
+            }
+        }
+        else { //both obj1 and obj2 are icoGroups
+            for(let node of ultraEdge.obj1.inner_nodes) {
+                for(let n of ultraEdge.obj2.inner_nodes) {
+                    let edge = new Edge(node, n)
+                    all_OneLevelEdges.add(edge)
+                }
+                for(let i of ultraEdge.obj2.inner_iconizedGroups) {
+                    let trueIcoGroup = fetchById(i.id, innerIconizedGroups)
+                    let u = new UltraEdge(node, trueIcoGroup)
+                    all_OneLevelUltraEdges.add(u)
+                }
+            }
+            for(let icoGroup of ultraEdge.obj1.inner_iconizedGroups) {
+                trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups)
+                for(let n of ultraEdge.obj2.inner_nodes) {
+                    let u = new UltraEdge(trueIcoGroup, n)
+                    all_OneLevelUltraEdges.add(u)
+                }
+                for(let i of ultraEdge.obj2.inner_iconizedGroups) {
+                    trueIcoGroup2 = fetchById(i.id, innerIconizedGroups)
+                    let u = new UltraEdge(trueIcoGroup, trueIcoGroup2)
+                    all_OneLevelUltraEdges.add(u)
+                }
+            }
+        }
+        
+    }
+
+    console.log("createExplodedGraph(): removing duplicates.")
+    //remove duplicates
+    let all_id_to_node_map = new Map()
+    for(let node of all_OneLevelNodes) {
+        let prior_node = all_id_to_node_map.get(node.id)
+        if(prior_node == undefined) {
+            all_id_to_node_map.set(node.id, node)
+        }
+    }
+    all_OneLevelNodes = new Set(all_id_to_node_map.values())
+
+    OneLevelInnerIconizedGroups = new Set(innerIconizedGroups)
+    OneLevelInnerIconizedGroups.delete(all_OneLevelIconizedGroups) 
+
+    if(all_OneLevelIconizedGroups.size > 0) {
+        createExplodedGraph(all_OneLevelNodes, all_OneLevelEdges, all_OneLevelIconizedGroups,
+            all_OneLevelUltraEdges, OneLevelInnerIconizedGroups)
+    }
+    else {
+        all_nodes = all_OneLevelNodes
+        all_edges = all_OneLevelEdges
+        safelyRecreateAllNodesAndAllEdges()
+    }
+    
+}
+
+//important to do this so the nodes and edges in all_nodes and all_edges are not mixed up with the real ones!!
+function safelyRecreateAllNodesAndAllEdges() {
+    id_to_all_nodes_map = new Map()
+    let safe_all_nodes = new Set()
+    let safe_all_edges = new Set()
+    for(let node of all_nodes) {
+        let safe_node = structuredNodeClone(node)
+        safe_node.edges = new Set()
+        safe_node.ultraEdges = new Set()
+        safe_all_nodes.add(safe_node)
+        id_to_all_nodes_map.set(safe_node.id, safe_node)
+    }
+
+    for(let edge of all_edges) {
+        let node1 = id_to_all_nodes_map.get(edge.node1.id)
+        let node2 = id_to_all_nodes_map.get(edge.node2.id)
+        let safe_edge = new Edge(node1, node2, edge.dir)
+        safe_all_edges.add(safe_edge)
+        node1.edges.add(safe_edge)
+        node2.edges.add(safe_edge)
+    }
+
+    all_nodes = safe_all_nodes
+    all_edges = safe_all_edges
+}
+
+function createOneLevelExpandedGraph() {
+    all_OneLevelNodes = new Set(nodes)
+    all_OneLevelEdges = new Set(edges)
+    all_OneLevelUltraEdges = new Set()
+    all_OneLevelIconizedGroups = new Set() //need to remove highest level iconized groups
+
+    for(let icoGroup of iconizedGroups) {
+        recenterIcoGroupContents(icoGroup) 
+        let coerced_inner_nodes = new Set()
+        for(let node of icoGroup.inner_nodes) {
+            node.parent = icoGroup
+            coerced_inner_nodes.add(coerceToNode(node))
+            console.log("Node with id = " + node.id + " should have a parent icoGroup!")
+        }
+        let coerced_inner_edges = new Set()
+        for(let edge of icoGroup.inner_edges) {
+            coerced_inner_edges.add(coerceToEdge(edge))
+        }
+        let coerced_inner_ultraEdges = new Set()
+        for(let ultraEdge of icoGroup.inner_ultraEdges) {
+            coerced_inner_ultraEdges.add(coerceToUltraEdge(ultraEdge))
+        }
+        let coerced_inner_iconizedGroups = new Set()
+        for(let i of icoGroup.inner_iconizedGroups) {
+            let trueIcoGroup = fetchById(i.id, innerIconizedGroups) //these are already coerced
+            trueIcoGroup.parent = icoGroup
+            coerced_inner_iconizedGroups.add(trueIcoGroup)
+        }
+        all_OneLevelNodes = all_OneLevelNodes.union(coerced_inner_nodes)
+        all_OneLevelEdges = all_OneLevelEdges.union(coerced_inner_edges)
+        all_OneLevelUltraEdges = all_OneLevelUltraEdges.union(coerced_inner_ultraEdges)
+        all_OneLevelIconizedGroups = all_OneLevelIconizedGroups.union(coerced_inner_iconizedGroups)
+    }
+    for(let ultraEdge of ultraEdges) {
+        if(!ultraEdge.obj1.hasOwnProperty("num_sides")) {  //obj2 must be an icoGroup
+            for(let node of ultraEdge.obj2.inner_nodes) {
+                let edge = new Edge(ultraEdge.obj1, node)
+                all_OneLevelEdges.add(edge)
+            }
+            for(let icoGroup of ultraEdge.obj2.inner_iconizedGroups) {
+                let trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups) 
+                let u = new UltraEdge(ultraEdge.obj1, trueIcoGroup)
+                all_OneLevelUltraEdges.add(u)
+            }
+        }
+        else if(!ultraEdge.obj2.hasOwnProperty("num_sides")) {  //obj1 must be an icoGroup
+            for(let node of ultraEdge.obj1.inner_nodes) {
+                let edge = new Edge(node, ultraEdge.obj2)
+                all_OneLevelEdges.add(edge)
+            }
+            for(let icoGroup of ultraEdge.obj1.inner_iconizedGroups) {
+                let trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups)
+                let u = new UltraEdge(trueIcoGroup, ultraEdge.obj2)
+                all_OneLevelUltraEdges.add(u)
+            }
+        }
+        else { //both obj1 and obj2 are icoGroups
+            for(let node of ultraEdge.obj1.inner_nodes) {
+                for(let n of ultraEdge.obj2.inner_nodes) {
+                    let edge = new Edge(node, n)
+                    all_OneLevelEdges.add(edge)
+                }
+                for(let i of ultraEdge.obj2.inner_iconizedGroups) {
+                    let trueIcoGroup = fetchById(i.id, innerIconizedGroups)
+                    let u = new UltraEdge(node, trueIcoGroup)
+                    all_OneLevelUltraEdges.add(u)
+                }
+            }
+            for(let icoGroup of ultraEdge.obj1.inner_iconizedGroups) {
+                trueIcoGroup = fetchById(icoGroup.id, innerIconizedGroups)
+                for(let n of ultraEdge.obj2.inner_nodes) {
+                    let u = new UltraEdge(trueIcoGroup, n)
+                    all_OneLevelUltraEdges.add(u)
+                }
+                for(let i of ultraEdge.obj2.inner_iconizedGroups) {
+                    trueIcoGroup2 = fetchById(i.id, innerIconizedGroups)
+                    let u = new UltraEdge(trueIcoGroup, trueIcoGroup2)
+                    all_OneLevelUltraEdges.add(u)
+                }
+            }
+        }
+        
+    }
+
+    //remove duplicates
+    let all_id_to_node_map = new Map()
+    for(let node of all_OneLevelNodes) {
+        let prior_node = all_id_to_node_map.get(node.id)
+        if(prior_node == undefined) {
+            all_id_to_node_map.set(node.id, node)
+        }
+    }
+    all_OneLevelNodes = new Set(all_id_to_node_map.values())
+
+    //this must be sent as JSON
+    OneLevelInnerIconizedGroups = new Set(innerIconizedGroups)
+    //OneLevelInnerIconizedGroups.delete(all_OneLevelIconizedGroups)  
+    for(let oneLevelInnerIco of all_OneLevelIconizedGroups) {
+        let oneLevelInnerIcoToDelete = fetchById(oneLevelInnerIco.id, OneLevelInnerIconizedGroups) 
+        if(oneLevelInnerIcoToDelete != undefined) {
+            OneLevelInnerIconizedGroups.delete(oneLevelInnerIcoToDelete)
+        }
+    }
+}
+
+
+function getVisibleParent(object) {
+    console.log("getting visible parent of object id = " + object.id)
+    if(!object.hasOwnProperty("parent") || object.parent == undefined) {
+        return object
+    }
+    else {
+        visibleParent = fetchById(object.parent.id, iconizedGroups)
+        if(visibleParent != undefined) {
+            return visibleParent
+        }
+        else {
+            return getVisibleParent(object.parent)
+        }
+    }
+}
+
+function findInnerNodeById(id) {
+    for(let icoGroup of iconizedGroups) {
+        for(let node of icoGroup.inner_nodes) {
+            if(node.id == id) {
+                return node
+            }
+        }
+    }
+
+    for(let icoGroup of innerIconizedGroups) {
+        for(let node of icoGroup.inner_nodes) {
+            if(node.id == id) {
+                return node
+            }
+        }
+    }
+
+    return undefined
+}
+
+function getMoveBoxDisplayLocforIcoGroup(icoGroup) {
+    let loc = new Point(0,0)
+    if(icoGroup.moveCount == 0) {
+        loc.x = icoGroup.x - 1.5*NODE_DRAW_RADIUS
+        loc.y = icoGroup.y - .5*icoGroup.radius + NAV_BAR_MARGIN
+    }
+    else if(icoGroup.moveCount == 1) {
+        loc.x = icoGroup.x + 0.5*NODE_DRAW_RADIUS + 2
+        loc.y = icoGroup.y - .5*icoGroup.radius + NAV_BAR_MARGIN
+    }
+    else if(2 <= icoGroup.moveCount && icoGroup.moveCount <= 4) {
+        loc.x = icoGroup.x - 2.5*NODE_DRAW_RADIUS + (icoGroup.moveCount - 2)*2*(NODE_DRAW_RADIUS+0.5)
+        loc.y = icoGroup.y - .5*icoGroup.radius + NAV_BAR_MARGIN + 2*NODE_DRAW_RADIUS + 3
+    }
+    else {
+        loc.x = icoGroup.x - 3.5*NODE_DRAW_RADIUS + (icoGroup.moveCount - 5)*2*(NODE_DRAW_RADIUS+0.5)
+        loc.y = icoGroup.y - .5*icoGroup.radius + NAV_BAR_MARGIN + 4*NODE_DRAW_RADIUS + 6
+    }
+    return loc
+}
+
+function getAllLegalMoves() {
+    all_moves = []
+
+    if(whose_move == SPOILER_MOVE) {
+        console.log("It is Spoiler's move!")
+        //moves on either side are fair game
+        let exists_side_moves = []
+        let forall_side_moves = []
+        console.log("There are a total of " + all_nodes.size + " nodes.")
+        for(let node of all_nodes) {
+            if(node.x < DIVIDING_LINE_LOC) {  //have to make sure this works within icoGroups
+                let move = new Move(node, undefined, EXISTS_SIDE, last_side_played)
+                exists_side_moves.push(move)
+            }
+            else {
+                let move = new Move(node, undefined, FORALL_SIDE, last_side_played)
+                forall_side_moves.push(move)
+            }
+        }
+        all_moves = exists_side_moves.concat(forall_side_moves)
+    }
+    else {
+        console.log("It is Duplicator's move!")
+        //only get moves on the side of !last_side_played
+        console.log("Last side played  = " + (last_side_played == EXISTS_SIDE ? "Exists Side" : "For All Side"))
+        for(let node of all_nodes) {
+            if(node.x < DIVIDING_LINE_LOC && last_side_played == FORALL_SIDE) {  //have to make sure this works within icoGroups
+                let move = new Move(node, undefined, EXISTS_SIDE, last_side_played)
+                all_moves.push(move)
+            }
+            else if(node.x > DIVIDING_LINE_LOC && last_side_played == EXISTS_SIDE) {
+                let move = new Move(node, undefined, FORALL_SIDE, last_side_played)
+                all_moves.push(move)
+            }
+        }
+    }
+
+    let lm_string = "Legal moves are: "
+    for(i = 0; i<all_moves.length; i++) {
+        if(i > 0) {
+            lm_string += ", "
+        }
+        lm_string += all_moves[i].node.id
+    }
+    console.log(lm_string)
+    return all_moves
+}
+
+function playMove(move) {   
+    console.log("in playMove()")
+    let moveBox = undefined
+    let moveNode = fetchById(move.node.id, nodes)
+    if(moveNode == undefined) {
+        let visibleParent = getVisibleParent(move.node) 
+        let loc = getMoveBoxDisplayLocforIcoGroup(visibleParent)
+        visibleParent.moveCount++
+        moveBox = createTextBox(loc.x, loc.y, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+    }
+    else {
+        moveBox = createTextBox(move.node.x - NODE_DRAW_RADIUS, move.node.y - NODE_DRAW_RADIUS + NAV_BAR_MARGIN, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+    }
+    moveBox.style.color = MOVE_TEXT_COLORS[(round_counter-1) % MOVE_TEXT_COLORS.length]
+    moveBox.style.backgroundColor = MOVE_BG_COLORS[(round_counter-1) % MOVE_BG_COLORS.length]
+    moveBox.style.fontSize = "8pt"
+    moveBox.value = round_counter.toString()
+    moveBox.style.textAlign = "center";
+    moveBox.readOnly=true
+    moveBox.disabled = true
+    moveBox.style.borderWidth = '0px';
+    /*let moveBox = createTextBox(move.node.x - NODE_DRAW_RADIUS, move.node.y - NODE_DRAW_RADIUS + NAV_BAR_MARGIN, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+    moveBox.style.color = MOVE_TEXT_COLORS[(round_counter-1) % MOVE_TEXT_COLORS.length]
+    moveBox.style.backgroundColor = MOVE_BG_COLORS[(round_counter-1) % MOVE_BG_COLORS.length]
+    moveBox.style.fontSize = "8pt"
+    moveBox.value = round_counter.toString()
+    moveBox.style.textAlign = "center";
+    moveBox.readOnly=true
+    moveBox.disabled = true
+    moveBox.style.borderWidth = '0px';*/
+    if(whose_move == DUPLICATOR_MOVE) {
+        round_counter++
+    }
+    else {
+        if(move.side_played == EXISTS_SIDE) {
+            inputGameSig.value += '\u2203'
+        }
+        else {
+            inputGameSig.value += '\u2200'
+        }
+    }
+    move.move_box = moveBox 
+    move_queue.push(move)
+    redo_queue = []
+    enableUndo()
+    disableRedo()
+    whose_move = (whose_move + 1) % 2
+    last_side_played = move.side_played
+ 
+    if(whose_move == SPOILER_MOVE) {
+        reportIfGameDecided()
+    }
+}
+
+async function makeComputerMove() {
+    await delay(250); 
+    //compPlaysWhich.style.color = "red"
+    move = playPseudoOptimalMove() 
+    /*await delay(250);
+    compPlaysWhich.style.color = "black"
+    let bgColor = move.move_box.style.backgroundColor 
+    move.move_box.style.backgroundColor = "black"
+    await delay(250);
+    compPlaysWhich.style.color = "red"
+    move.move_box.style.backgroundColor = bgColor
+    await delay(250)
+    compPlaysWhich.style.color = "black"*/
+
+    return move
+}
+
+function estimateNumberOfLookAheadPlyPossible() {
+    let MAX_LEAVES = 100000000  //100 million
+    let num_nodes = all_nodes.size
+    let branches_thus_far = 1
+    for(let i=0; true; i++) {
+        branches_thus_far = branches_thus_far*num_nodes/2
+        if(branches_thus_far > MAX_LEAVES) {
+            return i-1
+        }
+        if(i%2 == 1) {
+            num_nodes -= 2
+            if(num_nodes <= 0) {
+                return i+1
+            }
+        }
+    }
+}
+
+function getViableDuplicatorMoves(played_node_ids, depthInPly) {  //played_node_ids does not seem to be getting updated
+                                                               // as moves are being played; they perhaps should be pushed 
+                                                               // and popped like the moves
+    
+                                                              
+    let useful_moves = []
+    let winning_moves = []
+    let losing_moves = []
+    let saved_last_side_played = last_side_played
+    let legal_moves = getAllLegalMoves()
+    for(let move of legal_moves) {  
+        useful_moves.push(move)
+        total_moves_analyzed++
+        //if(total_moves_analyzed % 10 == 0) {
+        //    compAnalysis.value = "Total moves analyzed = " + total_moves_analyzed.toLocaleString("en-US") + "."
+        //    console.log("Total moves analyzed = " + total_moves_analyzed + ".")
+        //}
+        move_queue.push(move)  
+        played_node_ids.add(move.node.id)
+        whose_move = (whose_move + 1) % 2
+        last_side_played = move.side_played
+        let isWinningMove = true
+        if(!areGraphsPartiallyIsomorphic()) {
+            losing_moves.push([move, INFINITE])
+            console.log("Duplicator move " + move.node.id + " is a losing move! Does not maintain a partial iso.")
+        }
+        else {
+            if(depthInPly > 1) {
+                let [splr_winning_moves, splr_useful_moves, splr_losing_moves] = getViableSpoilerMoves(played_node_ids, depthInPly-1)
+                if(splr_winning_moves.length > 0) {
+                    losing_moves.push([move, splr_winning_moves.length])
+                    console.log("Duplicator move " + move.node.id + " is a losing move! A winning Spoiler reply is " + splr_winning_moves[0][0].node.id + ".")
+                } 
+                else {
+                    if(splr_useful_moves.length == splr_losing_moves.length) { 
+                        winning_moves.push(move)  //not necessarily winning moves, depends if we can see all the way to the end
+                        console.log("Duplicator move " + move.node.id + " is a potentially winning move!")
+                    }
+                }
+            }
+            else {
+                winning_moves.push(move)  //not necessarily winning moves, depends if we can see all the way to the end
+                console.log("Duplicator move " + move.node.id + " is a potentially winning move!")
+            }
+        }
+        let m = move_queue.pop()
+        played_node_ids.delete(m.node.id)
+        whose_move = (whose_move + 1) % 2
+        last_side_played = saved_last_side_played
+    }
+    
+    return [winning_moves, useful_moves, losing_moves]
+}
+
+function getViableSpoilerMoves(played_node_ids, depthInPly) {  //played_node_ids does not seem to be getting updated
+                                                               // as moves are being played; they perhaps should be pushed 
+                                                               // and popped like the moves
+    
+                                                              
+    let useful_moves = []
+    let winning_moves = [] //is an ordered pair, including the depth
+    let losing_moves = []
+    let saved_last_side_played = last_side_played
+    let legal_moves = getAllLegalMoves()
+    for(let move of legal_moves) {
+        if(!played_node_ids.has(move.node.id)) {
+            useful_moves.push(move)
+            total_moves_analyzed++
+            //if(total_moves_analyzed % 10 == 0) {
+            //    compAnalysis.value = "Total moves analyzed = " + total_moves_analyzed.toLocaleString("en-US") + "."
+            //    console.log("Total moves analyzed = " + total_moves_analyzed + ".")
+            //}
+            move_queue.push(move)  
+            console.log("Spoiler plays on node " + move.node.id + ".")
+            played_node_ids.add(move.node.id)
+            whose_move = (whose_move + 1) % 2
+            last_side_played = move.side_played
+            let dup_legal_moves = getAllLegalMoves()
+            let isWinningMove = true
+            let best_depth = depthInPly
+            for(let dup_move of dup_legal_moves) {
+                if(played_node_ids.has(dup_move.node.id)) {
+                    continue //not a useful move - ignore
+                }
+                move_queue.push(dup_move)
+                total_moves_analyzed++
+                //if(total_moves_analyzed % 10 == 0) {
+                //    compAnalysis.value = "Total moves analyzed = " + total_moves_analyzed.toLocaleString("en-US") + "."
+                //    console.log("Total moves analyzed = " + total_moves_analyzed + ".")
+                //}
+
+                played_node_ids.add(dup_move.node.id)
+                whose_move = (whose_move + 1) % 2
+                last_side_played = dup_move.side_played
+                if(areGraphsPartiallyIsomorphic()) {
+                    if(depthInPly > 2) {
+                        let [inner_winning_moves, inner_useful_moves, inner_losing_moves]  = getViableSpoilerMoves(played_node_ids, depthInPly-2)
+                        if(inner_winning_moves.length == 0) {  
+                            isWinningMove = false
+                            whose_move = (whose_move + 1) % 2
+                            last_side_played = move.side_played
+                            let m = move_queue.pop()
+                            played_node_ids.delete(m.node.id)
+                            if(inner_useful_moves.length == inner_losing_moves.length) {
+                                losing_moves.push(move)
+                            }
+                            break
+                        }
+                        else {
+                            let best_inner_depth = 0
+                            for(let move_combo of inner_winning_moves) {
+                                if(move_combo[1] > best_inner_depth) {
+                                    best_inner_depth = move_combo[1]
+                                }
+                            }
+                            if(best_inner_depth < best_depth) {
+                                best_depth = best_inner_depth
+                            }
+                        }
+                    }
+                    else {
+                        isWinningMove = false
+                        whose_move = (whose_move + 1) % 2
+                        last_side_played = move.side_played
+                        let m = move_queue.pop()
+                        played_node_ids.delete(m.node.id)
+                        losing_moves.push(move)
+                        break
+                    }
+                }
+                whose_move = (whose_move + 1) % 2
+                last_side_played = move.side_played
+                let m = move_queue.pop()
+                played_node_ids.delete(m.node.id)
+
+            }
+            if(isWinningMove) {
+                winning_moves.push([move, best_depth])
+            }
+
+            let m = move_queue.pop()
+            played_node_ids.delete(m.node.id)
+            whose_move = (whose_move + 1) % 2
+            last_side_played = saved_last_side_played
+        }
+    }
+    
+    if(useful_moves.length == 0) {  //possible that there are no useful moves at all!
+        //alert("there are no useful moves!")
+        useful_moves = legal_moves
+        losing_moves = legallegal_moves_moves
+    }
+    console.log("depthInPly = " + depthInPly + ", # useful_moves = " + useful_moves.length + ", # played_node_ids = " + played_node_ids.size)
+    return [winning_moves, useful_moves, losing_moves]  
+}
+
+async function playPseudoOptimalMove() {
+    let depthInPly = estimateNumberOfLookAheadPlyPossible()
+    neededDepthInPly = (num_rounds - round_counter + 1)*2
+    if(whose_move == DUPLICATOR_MOVE) {
+        neededDepthInPly--
+    }
+    if(depthInPly > neededDepthInPly) {  
+        depthInPly = neededDepthInPly
+    }
+    else if(depthInPly < neededDepthInPly) {
+        if(depthInPly % 2 == 1 && whose_move == SPOILER_MOVE) {
+            depthInPly--
+        }
+        else if(depthInPly % 2 == 0 && whose_move == DUPLICATOR_MOVE) {
+            depthInPly--
+        }
+    }
+    compAnalysis.value = "Look ahead depth = " + depthInPly + " ply."
+    await delay(2000);
+
+    total_moves_analyzed = 0
+   
+    //let legal_moves = getAllLegalMoves()
+    let legal_moves = []
+    //Get list of all nodes that have been played on
+    let played_node_ids = new Set()
+    for(let move of move_queue) {
+        played_node_ids.add(move.node.id)
+    }
+    for(let node of all_nodes) {
+        if(node.constant != '') {
+            played_node_ids.add(node.id)
+        }
+    }
+    if(whose_move == SPOILER_MOVE) { //avoid playing on top of a previous move or on a constant if possible
+        let [winning_moves, useful_moves, losing_moves] = getViableSpoilerMoves(played_node_ids, depthInPly)
+
+        compAnalysis.value = "Total moves analyzed = " + total_moves_analyzed.toLocaleString("en-US") + "."   //This message gets overwritten if
+                        //there is a first discovery of a winning move.
+        if(winning_moves.length > 0) {
+            if(!spoiler_win_announcmenet_has_been_made || round_counter < spoiler_round_annoucement_made_at) {
+                compAnalysis.value = "Spoiler has a winning move! " + total_moves_analyzed.toLocaleString("en-US") + " moves analyzed."
+                spoiler_win_announcmenet_has_been_made = true
+                spoiler_round_annoucement_made_at = round_counter
+                // let s_winners = "Winning moves: "
+                // for(let i=0; i<winning_moves.length; i++) {
+                //     if(i > 0) {
+                //         s_winners += ", "
+                //     }
+                //     s_winners += winning_moves[i].node.id
+                // }
+                // alert(s_winners)
+            }
+
+            //get winning_moves of of greatest depth (means discovered at shallowest depth)
+            let max_depth = 0
+            let best_winning_moves = []
+            for(let move_combo of winning_moves) {
+                if(move_combo[1] > max_depth) {
+                    max_depth = move_combo[1]
+                    best_winning_moves = []
+                    best_winning_moves.push(move_combo[0])
+                }
+                else if(move_combo[1] == max_depth) {
+                    best_winning_moves.push(move_combo[0])
+                }
+            }
+            legal_moves = best_winning_moves
+            //legal_moves = winning_moves
+        }
+        else {
+            if(losing_moves.length == useful_moves.length) {
+                if(depthInPly == neededDepthInPly) { //otherwise not necessarily a losing move
+                    if(!duplicator_win_announcmenet_has_been_made || round_counter < duplicator_round_annoucement_made_at) {
+                        compAnalysis.value = "Duplicator can force a win! " + total_moves_analyzed.toLocaleString("en-US") + " moves analyzed."
+                        duplicator_win_announcmenet_has_been_made = true
+                        duplicator_round_annoucement_made_at = round_counter
+                    }
+                }
+                legal_moves = useful_moves
+            }
+            else {
+                legal_moves = useful_moves.filter(item => !losing_moves.includes(item))
+            }
+        }
+    }
+    else { 
+        let [winning_moves, useful_moves, losing_moves] = getViableDuplicatorMoves(played_node_ids, depthInPly)
+        if(winning_moves.length > 0) {
+            if(depthInPly == neededDepthInPly) { //otherwise not necessarily a winning move
+                if(!duplicator_win_announcmenet_has_been_made || round_counter < duplicator_round_annoucement_made_at) {
+                    compAnalysis.value = "Duplicator can force a win! " + total_moves_analyzed.toLocaleString("en-US") + " moves analyzed."
+                    duplicator_win_announcmenet_has_been_made = true
+                    duplicator_round_annoucement_made_at = round_counter
+                }
+            }
+            legal_moves = winning_moves
+        }
+        else if(useful_moves.length == losing_moves.length) {
+            if(!spoiler_win_announcmenet_has_been_made || round_counter < spoiler_round_annoucement_made_at) {
+                compAnalysis.value = "Spoiler can force a win! " + total_moves_analyzed.toLocaleString("en-US") + " moves analyzed."
+                spoiler_win_announcmenet_has_been_made = true
+                spoiler_round_annoucement_made_at = round_counter
+            }
+            let min_options = INFINITE
+            legal_moves = []
+            for(let lmove of losing_moves) {
+                if(lmove[1] < min_options) {
+                    min_options = lmove[1]
+                    legal_moves = [lmove[0]]
+                }
+                else if(lmove[1] == min_options) {
+                    legal_moves.push(lmove[0])
+                }
+            }
+            //legal_moves = useful_moves
+        }
+        else {//has to be changed
+            let f_losing_moves = []
+            for(let lmove of losing_moves) {
+                f_losing_moves.push(lmove[0])
+            }
+            legal_moves = useful_moves.filter(item => !f_losing_moves.includes(item))
+        }
+    }
+    let r = Math.random() 
+    let randIndex = Math.floor(r * legal_moves.length);
+    let randMove = legal_moves[randIndex]
+    playMove(randMove)
+    return randMove
+}
+
+window.addEventListener("message",(event) => {    //Sets up the game based on the passed in JSON
+    console.log("message is: " + event.data)
+
+    gameObject = JSON.parse(event.data);
+    if(gameObject.hasOwnProperty("move")) { // Needs special handling!!
+        let moveNodeId = gameObject.move.node.id
+        let moveNode = findInnerNodeById(moveNodeId)
+        if(moveNode != undefined) {
+            moveNode = coerceToNode(moveNode)
+            console.log("Found node with id = " + moveNodeId)
+        }
+        else {
+            console.log("Could not find node with id = " + moveNodeId)
+        }
+        let visibleParent = getVisibleParent(moveNode)
+        let loc = getMoveBoxDisplayLocforIcoGroup(visibleParent)
+        visibleParent.moveCount++
+        moveBox = createTextBox(loc.x, loc.y, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+        moveBox.style.color = MOVE_TEXT_COLORS[(round_counter-1) % MOVE_TEXT_COLORS.length]
+        moveBox.style.backgroundColor = MOVE_BG_COLORS[(round_counter-1) % MOVE_BG_COLORS.length]
+        moveBox.style.fontSize = "8pt"
+        moveBox.value = round_counter.toString()
+        moveBox.style.textAlign = "center";
+        moveBox.readOnly=true
+        moveBox.disabled = true
+        moveBox.style.borderWidth = '0px';
+        side_played = gameObject.move.side_played
+        last_side_played = gameObject.move.last_side_played
+        if((move_queue.length % 2) == 1) {
+            round_counter++
+        }
+        else {
+            if(side_played == EXISTS_SIDE) {
+                inputGameSig.value += '\u2203'
+            }
+            else {
+                inputGameSig.value += '\u2200'
+            }
+        }
+        let move = new Move(moveNode, moveBox, gameObject.move.side_played, gameObject.move.last_side_played)
+        move_queue.push(move)
+        whose_move = (whose_move + 1) % 2
+        last_side_played = side_played
+        if(whose_move == SPOILER_MOVE) {
+            reportIfGameDecided()
+        }
+        redo_queue = []
+        enableUndo()
+        disableRedo()
+
+        handleComputerMoves()  
+        return
+    }
+    parentZoomLevel = gameObject.zoom_level
+    ourZoomLevel = getZoomLevel()
+
+    if(gameObject.edge_type == "directed") {
+        edge_type = TYPE_DIRECTED
+    }
+    else {
+        edge_type = TYPE_UNDIRECTED
+    }
+    nodes_are_ordered = gameObject.node_ordering
+    if(nodes_are_ordered) {
+        orderings_are_being_displayed = true  //default to starting out showing them
+    }
+    max_id = 0
+    for(let i=0; i<gameObject.nodes.length; i++) {
+        n = gameObject.nodes[i]
+        node = new Node(n.x, n.y, n.id, n.constant)
+        //scaleNodeToZoomLevel(parentZoomLevel, ourZoomLevel, node)
+        node.order = n.order
+        if(n.id > max_id) {
+            max_id = n.id
+        }
+        nodes.add(node)
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        if(orderings_are_being_displayed) {
+            if(node.order != NO_ORDER) {
+                orderInputBox.value = node.order
+            }
+            else {
+                orderInputBox.value = ''
+            }
+            orderInputBox.style.display = "initial"
+        }
+        else {
+            orderInputBox.style.display = "none"
+        }
+        if(node.constant != '') {
+            constantBox = createConstantBox(node.x + CONSTANT_BOX_OFFSET_X, node.y + CONSTANT_BOX_OFFSET_Y, node.constant, 
+                    CONSTANT_BOX_WIDTH, CONSTANT_BOX_HEIGHT)
+            node_id_to_constantBox_map.set(node.id, constantBox)
+        }
+    }
+    node_id_counter = max_id + 1
+    for(let i=0; i<gameObject.edges.length; i++) {
+        nodeId1 = gameObject.edges[i].node1.id
+        node1 = getNodeById(nodeId1)
+        nodeId2 = gameObject.edges[i].node2.id
+        node2 = getNodeById(nodeId2)
+        dir = gameObject.edges[i].dir
+        edge = new Edge(node1, node2, dir)
+        node1.edges.add(edge)
+        node2.edges.add(edge)
+        edges.add(edge)
+    }
+    
+    for(let i=0; i<gameObject.iconizedGroups.length; i++) {
+        iconizedGroups.add(coerceToIconizedGroup(gameObject.iconizedGroups[i]))
+    }
+    for(let i=0; i<gameObject.ultraEdges.length; i++) {
+        if(gameObject.ultraEdges[i].obj1.hasOwnProperty("num_sides")) {
+            gameObject.ultraEdges[i].obj1 = getIconoizedGroupById(gameObject.ultraEdges[i].obj1.id)
+        }
+        else {
+            gameObject.ultraEdges[i].obj1 = getNodeById(gameObject.ultraEdges[i].obj1.id)
+        }
+        if(gameObject.ultraEdges[i].obj2.hasOwnProperty("num_sides")) {
+            gameObject.ultraEdges[i].obj2 = getIconoizedGroupById(gameObject.ultraEdges[i].obj2.id)
+        }
+        else {
+            gameObject.ultraEdges[i].obj2 = getNodeById(gameObject.ultraEdges[i].obj2.id)
+        }
+        ultraEdges.add(coerceToUltraEdge(gameObject.ultraEdges[i]))
+    }
+    for(let i=0; i<gameObject.innerIconizedGroups.length; i++) {
+        innerIcoGroup = coerceToIconizedGroup(gameObject.innerIconizedGroups[i])
+        innerIconizedGroups.add(innerIcoGroup)
+    }
+
+    createExplodedGraph(nodes, edges, iconizedGroups, ultraEdges, innerIconizedGroups) 
+    computeAllParents()  //not sure why this does not work!!
+
+
+    count_left_side_nodes = 0
+    count_right_side_nodes = 0
+    for(let node of all_nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            count_left_side_nodes++
+        }
+        else {
+            count_right_side_nodes++
+        }
+    }
+
+    if(gameObject.hasOwnProperty("num_rounds")) {
+        num_rounds = gameObject.num_rounds
+    }
+    else {
+        num_rounds = Math.min(count_left_side_nodes, count_right_side_nodes)
+    }
+    comp_plays_spoiler = gameObject.comp_spoiler
+    comp_plays_duplicator = gameObject.comp_duplicator
+    comp__provides_analysis = gameObject.comp_analysis
+    if(comp_plays_spoiler && !comp_plays_duplicator) {
+        compPlaysWhich.value = "Spoiler"
+    }
+    else if(!comp_plays_spoiler && comp_plays_duplicator) {
+        compPlaysWhich.value = "Duplicator"
+    }
+    else if(comp_plays_spoiler && comp_plays_duplicator) {
+        compPlaysWhich.value = "Both"
+    }
+    else {
+        compPlaysWhich.value = "N/A"
+    }
+    inputNumRds.value = num_rounds
+
+    makePreMoves()
+
+    move_queue = []
+    console.log("gameObject.move_queue.length = " + gameObject.move_queue.length)
+    for(let i=0; i<gameObject.move_queue.length; i++) {
+        moveNode = getNodeById(gameObject.move_queue[i].node.id)  //needs to be taken from all_nodes if not found
+        if(moveNode != undefined) {
+             moveBox = createTextBox(moveNode.x - NODE_DRAW_RADIUS, moveNode.y - NODE_DRAW_RADIUS + NAV_BAR_MARGIN, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+        }
+       if(moveNode == undefined) {
+            moveNode = findInnerNodeById(gameObject.move_queue[i].node.id)
+            moveNode = coerceToNode(moveNode)
+            let visibleParent = getVisibleParent(moveNode)
+            let loc = getMoveBoxDisplayLocforIcoGroup(visibleParent)
+            visibleParent.moveCount++
+            moveBox = createTextBox(loc.x, loc.y, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+        }
+        moveBox.style.color = MOVE_TEXT_COLORS[(round_counter-1) % MOVE_TEXT_COLORS.length]
+        moveBox.style.backgroundColor = MOVE_BG_COLORS[(round_counter-1) % MOVE_BG_COLORS.length]
+        moveBox.style.fontSize = "8pt"
+        moveBox.value = round_counter.toString()
+        moveBox.style.textAlign = "center";
+        moveBox.readOnly=true
+        moveBox.disabled = true
+        moveBox.style.borderWidth = '0px';
+        side_played = gameObject.move_queue[i].side_played
+        //if(moveNode.x > DIVIDING_LINE_LOC) {
+        //    side_played = FORALL_SIDE
+        //}
+        if((i % 2) == 1) {
+            round_counter++
+        }
+        else {
+            if(side_played == EXISTS_SIDE) {
+                inputGameSig.value += '\u2203'
+            }
+            else {
+                inputGameSig.value += '\u2200'
+            }
+        }
+        move = new Move(moveNode, moveBox, side_played, gameObject.move_queue[i].last_side_played)
+        move_queue.push(move)
+    }
+
+    redrawAll()
+    reportIfGameDecided()
+
+    handleComputerMoves()
+
+ },false);
+
+ async function handleComputerMoves() {
+     while(inputWhoWon.value == '') {  //if game not over   //Not working if comp_plays_spoiler!!
+        if((whose_move == SPOILER_MOVE && comp_plays_spoiler) || (whose_move == DUPLICATOR_MOVE && comp_plays_duplicator)) {
+            await makeComputerMove()  
+        }
+        else {
+            break;
+        }
+    }
+ }
+
+function makePreMoves() {   //these have to be from all_nodes!!
+    for(let node of all_nodes) {
+        if(node.constant != '') {
+            let side_moved = (node.x < DIVIDING_LINE_LOC ? EXISTS_SIDE : FORALL_SIDE)
+            let last_side_moved = (side_moved == EXISTS_SIDE ? FORALL_SIDE : EXISTS_SIDE)
+            let move = new Move(node, undefined, side_moved, last_side_moved)
+            pre_move_queue.push(move)
+        }
+    }
+    pre_move_queue.sort((m1, m2) => {
+        if (m1.node.constant < m2.node.constant || (m1.node.constant == m2.node.constant && m1.node.x < DIVIDING_LINE_LOC)) {
+            return -1;
+        }
+        else {
+            return 1;
+        }
+    });
+}
+
+function Point(x, y) {
+  this.x = x;
+  this.y = y;
+}
+
+function Node(x, y, id, constant='', createOrderInputBox=true) {  //Note: this constructor includes the id, unlike the Node constructor in ef.html!!
+    this.x = x
+    this.y = y
+    this.edges = new Set()
+    this.ultraEdges = new Set()
+    this.id = id
+    this.constant = constant
+    this.order = NO_ORDER
+    this.parent = undefined  //parent icoGroup if any
+    if(createOrderInputBox) {
+        orderInputBox = createNodeOrderingBox(this)
+        orderInputBox.style.display = "none"
+    }
+}
+
+function structuredNodeClone(node) {  //does not create an ordering box
+    let n0 = structuredClone(node)
+    let n = new Node(n0.x, n0.y, n0.id, n0.constant, false)
+    n.edges = node.edges
+    n.ultraEdges = node.ultraEdges
+    n.order = node.order
+    n.parent = node.parent
+    return n
+  }
+
+Node.prototype.toJson = function() {
+    return JSON.stringify({x: this.x, 
+                           y: this.y,
+                           id: this.id,
+                           order: this.order,
+                           constant: this.constant
+    })
+}
+
+function Edge(node1, node2, dir=DIR_NONE) {  //all edges assumed to be of type edge_type, dir is just used to know how to draw self-loops
+    this.node1 = node1
+    this.node2 = node2
+    this.dir = dir
+}
+
+Edge.prototype.toJson = function() {
+    return JSON.stringify({node1: this.node1, 
+                           node2: this.node2, 
+                           dir: this.dir
+    })
+}
+
+function IconizedGroup(inner_nodes, inner_edges, inner_iconizedGroups, inner_ultraEdges, ultraEdges, x, y, num_sides, radius, fill_color, label="") {
+    this.inner_nodes = inner_nodes   
+    this.inner_edges = inner_edges 
+    this.inner_iconizedGroups = inner_iconizedGroups
+    this.inner_ultraEdges = inner_ultraEdges
+    this.ultraEdges = ultraEdges  
+
+    this.x = x
+    this.y = y
+    this.num_sides = num_sides
+    this.radius = radius
+    this.fill_color = fill_color
+    this.label = label
+    this.id = undefined
+    this.parent = undefined  //parent icoGroup if any
+    this.moveCount = 0
+}
+
+IconizedGroup.prototype.toJson = function() {
+    return JSON.stringify({inner_nodes: Array.from(this.inner_nodes), 
+                           inner_edges: Array.from(this.inner_edges),
+                           inner_iconizedGroups: Array.from(this.inner_iconizedGroups),
+                           inner_ultraEdges: Array.from(this.inner_ultraEdges),
+                           x: this.x,
+                           y: this.y,
+                           num_sides: this.num_sides,
+                           radius: this.radius,
+                           fill_color: this.fill_color,
+                           label: this.label,
+                           id: this.id
+    })
+}
+
+
+function UltraEdge(obj1, obj2, dir=DIR_NONE) {
+    this.obj1 = obj1
+    this.obj2 = obj2
+    this.dir = dir  //just for drawing self-loops; currently unused
+}
+
+UltraEdge.prototype.toJson = function() {
+    return JSON.stringify({obj1: this.obj1, 
+                           obj2: this.obj2, 
+                           dir: this.dir
+    })
+}
+
+function arrayToJson(array) {
+    json = "["
+    for(i=0; i<array.length; i++) {
+       json += array[i].toJson()
+        if(i < array.length-1) {
+            json += ","
+        }
+    }
+    json += ']'
+    return json
+}
+
+function Move(node, move_box, side_played, last_side_played) {  //last_side_played is the last_side_played at the time of making this move
+    this.node = node
+    this.move_box = move_box
+    this.side_played = side_played
+    this.last_side_played =  last_side_played
+}
+
+Move.prototype.toJson = function() {
+    json = "{\"node\": " + this.node.toJson() + ", \"move_box\": " + 
+        JSON.stringify(this.move_box) + ", \"side_played\": " +
+        this.side_played + ", \"last_side_played\": " +
+        this.last_side_played + "}"
+    return json
+}
+
+function computeAllParents() {
+    for(let icoGroup of innerIconizedGroups) {
+        for(let node of icoGroup.inner_nodes) {
+            node.parent = icoGroup
+        }
+        for(let i of icoGroup.inner_iconizedGroups) {
+            i.parent = icoGroup
+        }
+    }
+
+    for(let icoGroup of iconizedGroups) {
+        for(let node of icoGroup.inner_nodes) {
+            //console.log("computeAllParents(): parent is " + (node.parent == undefined ? "Not" : "") + " defined.")
+            //console.log("computeAllParents(): setting parent of node with id = " + node.id + "!")
+            node.parent = icoGroup
+            //console.log("computeAllParents(): parent is " + (node.parent == undefined ? "Not" : "") + " defined.")
+        }
+       for(let i of icoGroup.inner_iconizedGroups) {
+            i.parent = icoGroup
+        }
+    }
+}
+
+function beep() {
+    var snd = new Audio("data:audio/wav;base64,//uQRAAAAWMSLwUIYAAsYkXgoQwAEaYLWfkWgAI0wWs/ItAAAGDgYtAgAyN+QWaAAihwMWm4G8QQRDiMcCBcH3Cc+CDv/7xA4Tvh9Rz/y8QADBwMWgQAZG/ILNAARQ4GLTcDeIIIhxGOBAuD7hOfBB3/94gcJ3w+o5/5eIAIAAAVwWgQAVQ2ORaIQwEMAJiDg95G4nQL7mQVWI6GwRcfsZAcsKkJvxgxEjzFUgfHoSQ9Qq7KNwqHwuB13MA4a1q/DmBrHgPcmjiGoh//EwC5nGPEmS4RcfkVKOhJf+WOgoxJclFz3kgn//dBA+ya1GhurNn8zb//9NNutNuhz31f////9vt///z+IdAEAAAK4LQIAKobHItEIYCGAExBwe8jcToF9zIKrEdDYIuP2MgOWFSE34wYiR5iqQPj0JIeoVdlG4VD4XA67mAcNa1fhzA1jwHuTRxDUQ//iYBczjHiTJcIuPyKlHQkv/LHQUYkuSi57yQT//uggfZNajQ3Vmz+Zt//+mm3Wm3Q576v////+32///5/EOgAAADVghQAAAAA//uQZAUAB1WI0PZugAAAAAoQwAAAEk3nRd2qAAAAACiDgAAAAAAABCqEEQRLCgwpBGMlJkIz8jKhGvj4k6jzRnqasNKIeoh5gI7BJaC1A1AoNBjJgbyApVS4IDlZgDU5WUAxEKDNmmALHzZp0Fkz1FMTmGFl1FMEyodIavcCAUHDWrKAIA4aa2oCgILEBupZgHvAhEBcZ6joQBxS76AgccrFlczBvKLC0QI2cBoCFvfTDAo7eoOQInqDPBtvrDEZBNYN5xwNwxQRfw8ZQ5wQVLvO8OYU+mHvFLlDh05Mdg7BT6YrRPpCBznMB2r//xKJjyyOh+cImr2/4doscwD6neZjuZR4AgAABYAAAABy1xcdQtxYBYYZdifkUDgzzXaXn98Z0oi9ILU5mBjFANmRwlVJ3/6jYDAmxaiDG3/6xjQQCCKkRb/6kg/wW+kSJ5//rLobkLSiKmqP/0ikJuDaSaSf/6JiLYLEYnW/+kXg1WRVJL/9EmQ1YZIsv/6Qzwy5qk7/+tEU0nkls3/zIUMPKNX/6yZLf+kFgAfgGyLFAUwY//uQZAUABcd5UiNPVXAAAApAAAAAE0VZQKw9ISAAACgAAAAAVQIygIElVrFkBS+Jhi+EAuu+lKAkYUEIsmEAEoMeDmCETMvfSHTGkF5RWH7kz/ESHWPAq/kcCRhqBtMdokPdM7vil7RG98A2sc7zO6ZvTdM7pmOUAZTnJW+NXxqmd41dqJ6mLTXxrPpnV8avaIf5SvL7pndPvPpndJR9Kuu8fePvuiuhorgWjp7Mf/PRjxcFCPDkW31srioCExivv9lcwKEaHsf/7ow2Fl1T/9RkXgEhYElAoCLFtMArxwivDJJ+bR1HTKJdlEoTELCIqgEwVGSQ+hIm0NbK8WXcTEI0UPoa2NbG4y2K00JEWbZavJXkYaqo9CRHS55FcZTjKEk3NKoCYUnSQ0rWxrZbFKbKIhOKPZe1cJKzZSaQrIyULHDZmV5K4xySsDRKWOruanGtjLJXFEmwaIbDLX0hIPBUQPVFVkQkDoUNfSoDgQGKPekoxeGzA4DUvnn4bxzcZrtJyipKfPNy5w+9lnXwgqsiyHNeSVpemw4bWb9psYeq//uQZBoABQt4yMVxYAIAAAkQoAAAHvYpL5m6AAgAACXDAAAAD59jblTirQe9upFsmZbpMudy7Lz1X1DYsxOOSWpfPqNX2WqktK0DMvuGwlbNj44TleLPQ+Gsfb+GOWOKJoIrWb3cIMeeON6lz2umTqMXV8Mj30yWPpjoSa9ujK8SyeJP5y5mOW1D6hvLepeveEAEDo0mgCRClOEgANv3B9a6fikgUSu/DmAMATrGx7nng5p5iimPNZsfQLYB2sDLIkzRKZOHGAaUyDcpFBSLG9MCQALgAIgQs2YunOszLSAyQYPVC2YdGGeHD2dTdJk1pAHGAWDjnkcLKFymS3RQZTInzySoBwMG0QueC3gMsCEYxUqlrcxK6k1LQQcsmyYeQPdC2YfuGPASCBkcVMQQqpVJshui1tkXQJQV0OXGAZMXSOEEBRirXbVRQW7ugq7IM7rPWSZyDlM3IuNEkxzCOJ0ny2ThNkyRai1b6ev//3dzNGzNb//4uAvHT5sURcZCFcuKLhOFs8mLAAEAt4UWAAIABAAAAAB4qbHo0tIjVkUU//uQZAwABfSFz3ZqQAAAAAngwAAAE1HjMp2qAAAAACZDgAAAD5UkTE1UgZEUExqYynN1qZvqIOREEFmBcJQkwdxiFtw0qEOkGYfRDifBui9MQg4QAHAqWtAWHoCxu1Yf4VfWLPIM2mHDFsbQEVGwyqQoQcwnfHeIkNt9YnkiaS1oizycqJrx4KOQjahZxWbcZgztj2c49nKmkId44S71j0c8eV9yDK6uPRzx5X18eDvjvQ6yKo9ZSS6l//8elePK/Lf//IInrOF/FvDoADYAGBMGb7FtErm5MXMlmPAJQVgWta7Zx2go+8xJ0UiCb8LHHdftWyLJE0QIAIsI+UbXu67dZMjmgDGCGl1H+vpF4NSDckSIkk7Vd+sxEhBQMRU8j/12UIRhzSaUdQ+rQU5kGeFxm+hb1oh6pWWmv3uvmReDl0UnvtapVaIzo1jZbf/pD6ElLqSX+rUmOQNpJFa/r+sa4e/pBlAABoAAAAA3CUgShLdGIxsY7AUABPRrgCABdDuQ5GC7DqPQCgbbJUAoRSUj+NIEig0YfyWUho1VBBBA//uQZB4ABZx5zfMakeAAAAmwAAAAF5F3P0w9GtAAACfAAAAAwLhMDmAYWMgVEG1U0FIGCBgXBXAtfMH10000EEEEEECUBYln03TTTdNBDZopopYvrTTdNa325mImNg3TTPV9q3pmY0xoO6bv3r00y+IDGid/9aaaZTGMuj9mpu9Mpio1dXrr5HERTZSmqU36A3CumzN/9Robv/Xx4v9ijkSRSNLQhAWumap82WRSBUqXStV/YcS+XVLnSS+WLDroqArFkMEsAS+eWmrUzrO0oEmE40RlMZ5+ODIkAyKAGUwZ3mVKmcamcJnMW26MRPgUw6j+LkhyHGVGYjSUUKNpuJUQoOIAyDvEyG8S5yfK6dhZc0Tx1KI/gviKL6qvvFs1+bWtaz58uUNnryq6kt5RzOCkPWlVqVX2a/EEBUdU1KrXLf40GoiiFXK///qpoiDXrOgqDR38JB0bw7SoL+ZB9o1RCkQjQ2CBYZKd/+VJxZRRZlqSkKiws0WFxUyCwsKiMy7hUVFhIaCrNQsKkTIsLivwKKigsj8XYlwt/WKi2N4d//uQRCSAAjURNIHpMZBGYiaQPSYyAAABLAAAAAAAACWAAAAApUF/Mg+0aohSIRobBAsMlO//Kk4soosy1JSFRYWaLC4qZBYWFRGZdwqKiwkNBVmoWFSJkWFxX4FFRQWR+LsS4W/rFRb/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////VEFHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAU291bmRib3kuZGUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMjAwNGh0dHA6Ly93d3cuc291bmRib3kuZGUAAAAAAAAAACU=");  
+    snd.play();
+}
+
+function drawDividingLine() {
+    ctx.beginPath()
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 1;
+    ctx.moveTo(DIVIDING_LINE_LOC, TOP_BUFFER);
+    ctx.lineTo(DIVIDING_LINE_LOC, CANVAS_HEIGHT);
+    ctx.stroke();
+    ctx.closePath()
+}
+
+function get_clicked_on_node(event) {
+    x = event.clientX - canvas.offsetLeft
+    y = event.clientY - canvas.offsetTop
+    nodeList = Array.from(nodes)
+    //can be very close nodes so find closest, not just node within click tolerance
+    closest_distance = INFINITE
+    closet_node = undefined
+    for(let i=0; i<nodeList.length; i++) {
+        node = nodeList[i]
+        distance = Math.pow(x-node.x, 2) + Math.pow(y-node.y, 2)
+        if(distance <= Math.pow(NODE_DRAW_RADIUS + NODE_CLICK_TOLERANCE,2) && distance < closest_distance) {
+            closet_node = node
+            closest_distance = distance
+        }
+    }
+
+    return closet_node
+}
+
+function get_clicked_on_iconizedGroup(event) {
+    x = event.clientX - canvas.offsetLeft
+    y = event.clientY - canvas.offsetTop
+     for(icoGroup of iconizedGroups) {
+        let d = Math.sqrt(Math.pow(x - icoGroup.x, 2) + Math.pow(y - icoGroup.y, 2))
+        if(d <= icoGroup.radius) {
+            return icoGroup
+        }
+    }
+
+    return undefined
+}
+
+function draw_node(node) {
+    ctx.beginPath()
+    ctx.strokeStyle = DISK_COLOR;
+    ctx.moveTo(node.x, node.y);
+    ctx.arc(node.x, node.y, NODE_DRAW_RADIUS, 0, 2*Math.PI)
+    ctx.fillStyle = DISK_COLOR; // Fill the circle with DOISK_COLOR
+    ctx.fill();
+    ctx.lineWidth = 1
+    ctx.stroke();
+    ctx.closePath()
+    constantBox = node_id_to_constantBox_map.get(node.id)
+    if(constantBox != undefined) {
+        drawConstantBoxFlagPole(node)
+    }
+}
+
+function erase_node(node) {
+    ctx.beginPath()
+    ctx.strokeStyle = "white";
+    ctx.moveTo(node.x, node.y);
+    ctx.arc(node.x, node.y, NODE_DRAW_RADIUS+2, 0, 2*Math.PI)
+    ctx.fillStyle = "white"; 
+    ctx.fill();
+    ctx.lineWidth = 2
+    ctx.stroke();
+    ctx.closePath()
+    constantBox = node_id_to_constantBox_map.get(node.id)
+    if(constantBox != undefined) {
+        eraseConstantBoxFlagPole(node)
+    }
+}
+
+function create_node(node) {
+    nodes.add(node)
+    draw_node(node)
+    if(orderings_are_being_displayed) {
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        orderInputBox.style.display = "initial"
+    }
+}
+
+function delete_node(node) {
+    edge_list = Array.from(node.edges)
+    for(let i=0; i<edge_list.length; i++) {
+        unselect_edge(edge_list[i])
+        delete_edge(edge_list[i])
+    }
+    erase_node(node)
+    node_id_to_inputBox_map.get(node.id).style.display = "none"
+    node_id_to_inputBox_map.delete(node.id)
+    nodes.delete(node)
+    draw_all_edges()  //could be more clever about edges needing to be redrawn....
+}
+
+function draw_all_nodes() {
+    for(let node of nodes) {
+        draw_node(node)
+    }
+}
+
+function draw_directed_edge(edge) {
+    fromX = edge.node1.x
+    toX = edge.node2.x
+    fromY = edge.node1.y
+    toY = edge.node2.y
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(-dy, -dx);
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(edge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.strokeStyle = EDGE_COLOR
+    ctx.lineWidth = EDGE_WIDTH
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(midX, midY);
+    ctx.lineTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = EDGE_COLOR
+    ctx.fill();
+}
+
+function draw_edge(edge) {
+    if(edge.node1 != edge.node2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = EDGE_COLOR
+            ctx.lineWidth = EDGE_WIDTH
+            ctx.moveTo(edge.node1.x, edge.node1.y);
+            ctx.lineTo(edge.node2.x, edge.node2.y); 
+            ctx.stroke();
+            ctx.closePath()
+        }
+        else {
+            draw_directed_edge(edge)
+        }
+    }
+    else {
+        drawSelfLoop(edge.node1, edge.dir)
+    }
+}
+
+function erase_edge(edge) {  //have to be sure to delete directed edge if needed 
+    if(edge.node1 != edge.node2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = "white"
+            ctx.lineWidth = 2*EDGE_WIDTH
+            ctx.moveTo(edge.node1.x, edge.node1.y);
+            ctx.lineTo(edge.node2.x, edge.node2.y); 
+            ctx.stroke();
+            ctx.closePath()
+        }
+        else {
+            erase_directed_edge(edge)
+        }
+        draw_node(edge.node1)
+        draw_node(edge.node2)
+    }
+    else {
+        eraseSelfLoop(edge.node1, edge.dir)
+    }
+ }
+
+ function erase_directed_edge(edge) {   
+    fromX = edge.node1.x
+    toX = edge.node2.x
+    fromY = edge.node1.y
+    toY = edge.node2.y
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(-dy, -dx);
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(edge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+
+    ctx.beginPath();
+    ctx.strokeStyle = "white"
+    ctx.lineWidth = 2*EDGE_WIDTH
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.lineWidth = 2*EDGE_WIDTH
+    ctx.strokeStyle = "white"
+    ctx.moveTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(midX, midY);
+    ctx.lineTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = "white"
+    ctx.fill();
+    ctx.stroke()
+ }
+
+ function create_edge(edge) {
+    edge.node1.edges.add(edge)
+    edge.node2.edges.add(edge)
+    edges.add(edge)
+    draw_edge(edge)
+ }
+
+ function delete_edge(edge) {
+    erase_edge(edge)
+    edge.node1.edges.delete(edge)
+    edge.node2.edges.delete(edge)
+    edges.delete(edge)
+    draw_all_edges()  //repair crosses
+ }
+
+ function draw_all_edges() {
+    for(let edge of edges) {
+        draw_edge(edge)
+    }
+ }
+
+ function create_ultraEdge(ultraEdge) {
+    ultraEdge.obj1.ultraEdges.add(ultraEdge)
+    ultraEdge.obj2.ultraEdges.add(ultraEdge)
+    ultraEdges.add(ultraEdge)
+    draw_ultraEdge(ultraEdge)
+ }
+
+ function draw_all_ultraEdges() {
+    for(let ultraEdge of ultraEdges) {
+        draw_ultraEdge(ultraEdge)
+    }
+ }
+
+ function draw_ultraEdge(ultraEdge) {
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = EDGE_COLOR
+            ctx.lineWidth = EDGE_WIDTH*2
+            ctx.setLineDash([10, 5]);
+            ctx.moveTo(ultraEdge.obj1.x, ultraEdge.obj1.y);
+            ctx.lineTo(ultraEdge.obj2.x, ultraEdge.obj2.y); 
+            ctx.stroke();
+            ctx.closePath()
+            ctx.setLineDash([]);
+        }
+        else {
+            draw_directed_ultraEdge(ultraEdge)
+        }
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {  
+            draw_iconizedGroup(ultraEdge.obj1)
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj2)
+        }
+    }
+    else {
+        drawUltraSelfLoop(ultraEdge.obj1, ultraEdge.dir)
+        draw_iconizedGroup(ultraEdge.obj1)
+    }
+}
+
+function erase_ultraEdge(ultraEdge) {
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = "white"
+            ctx.lineWidth = EDGE_WIDTH*4
+            ctx.moveTo(ultraEdge.obj1.x, ultraEdge.obj1.y);
+            ctx.lineTo(ultraEdge.obj2.x, ultraEdge.obj2.y); 
+            ctx.stroke();
+            ctx.closePath()
+        }
+        else {
+            erase_directed_ultraEdge(ultraEdge)
+        }
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj1)
+        }
+        else {
+            draw_node(ultraEdge.obj1)
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj2)
+        }
+        else {
+            draw_node(ultraEdge.obj2)
+        }
+    }
+    else {
+        eraseUltraSelfLoop(ultraEdge.obj1, ultraEdge.dir)
+    }
+}
+
+function select_ultraEdge(ultraEdge) {
+    alreadyInSelectedSet = false
+    for(let u of selected_ultraEdges) {
+        if(equalUltraEdges(u, ultraEdge)) {
+            alreadyInSelectedSet = true
+        }
+    }
+    if(!alreadyInSelectedSet) {
+        selected_ultraEdges.add(ultraEdge)
+    }
+    else {
+        //return  IMMEDIATELY RETURNING CAUSES MOVES OF SELECTED EDGES NOT TO DRAW!!
+    }
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        let ultraEdge_length = Math.sqrt(Math.pow(ultraEdge.obj1.x - ultraEdge.obj2.x, 2) + Math.pow(ultraEdge.obj1.y - ultraEdge.obj2.y, 2))
+        radius1 = radius2 = NODE_DRAW_RADIUS
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+            d = getPointToIconizedGroupIconDistance(new Point(ultraEdge.obj2.x, ultraEdge.obj2.y), ultraEdge.obj1)
+            radius1 = ultraEdge_length - d
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            d = getPointToIconizedGroupIconDistance(new Point(ultraEdge.obj1.x, ultraEdge.obj1.y), ultraEdge.obj2)
+            radius2 = ultraEdge_length - d
+        }
+        //key_ratio1 = key_ratio2 = (edge_length - 2*(NODE_DRAW_RADIUS+1))/edge_length
+        key_ratio1 = (ultraEdge_length - (radius2 + NODE_DRAW_RADIUS + 1))/ultraEdge_length
+        key_ratio2 = (ultraEdge_length - (radius1 + NODE_DRAW_RADIUS + 1))/ultraEdge_length
+    
+        square1_x = (1-key_ratio1)*ultraEdge.obj1.x + key_ratio1*ultraEdge.obj2.x
+        square1_y = (1-key_ratio1)*ultraEdge.obj1.y + key_ratio1*ultraEdge.obj2.y
+        square2_x = key_ratio2*ultraEdge.obj1.x + (1-key_ratio2)*ultraEdge.obj2.x
+        square2_y = key_ratio2*ultraEdge.obj1.y + (1-key_ratio2)*ultraEdge.obj2.y
+    }
+    else {
+        square1_x = square2_x = ultraEdge.obj1.x
+        square1_y = square2_y = ultraEdge.obj1.y
+        let dt = 5
+        if(ultraEdge.dir == DIR_UP) {
+            square1_x -= 2*(NODE_DRAW_RADIUS+1)
+            square2_x += 2*(NODE_DRAW_RADIUS+1)
+            square1_y -= dt
+            square2_y -= dt
+        }
+        else if(ultraEdge.dir == DIR_DOWN) {
+            square1_x -= 2*(NODE_DRAW_RADIUS+1)
+            square2_x += 2*(NODE_DRAW_RADIUS+1)
+            square1_y += dt
+            square2_y += dt
+        }
+        else if(ultraEdge.dir == DIR_RIGHT) {
+            square1_x += dt
+            square2_x += dt
+            square1_y -= 2*(NODE_DRAW_RADIUS+1)
+            square2_y += 2*(NODE_DRAW_RADIUS+1)
+        }
+        else {
+            square1_x -= dt
+            square2_x -= dt
+            square1_y -= 2*(NODE_DRAW_RADIUS+1)
+            square2_y += 2*(NODE_DRAW_RADIUS+1)
+        }
+    }
+    drawSelectionCircle(square1_x, square1_y, NODE_DRAW_RADIUS+1)
+    drawSelectionCircle(square2_x, square2_y, NODE_DRAW_RADIUS+1)
+
+    if(edge_type == TYPE_DIRECTED) {
+        drawSelectionTriangle(ultraEdge)
+    }
+}
+
+function unselect_ultraEdge(ultraEdge) {
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        let ultraEdge_length = Math.sqrt(Math.pow(ultraEdge.obj1.x - ultraEdge.obj2.x, 2) + Math.pow(ultraEdge.obj1.y - ultraEdge.obj2.y, 2))
+        radius1 = radius2 = NODE_DRAW_RADIUS
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+            d = getPointToIconizedGroupIconDistance(new Point(ultraEdge.obj2.x, ultraEdge.obj2.y), ultraEdge.obj1)
+            radius1 = ultraEdge_length - d
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            d = getPointToIconizedGroupIconDistance(new Point(ultraEdge.obj1.x, ultraEdge.obj1.y), ultraEdge.obj2)
+            radius2 = ultraEdge_length - d
+        }
+        //key_ratio1 = key_ratio2 = (edge_length - 2*(NODE_DRAW_RADIUS+1))/edge_length
+        key_ratio1 = (ultraEdge_length - (radius2 + NODE_DRAW_RADIUS + 1))/ultraEdge_length
+        key_ratio2 = (ultraEdge_length - (radius1 + NODE_DRAW_RADIUS + 1))/ultraEdge_length
+    
+        square1_x = (1-key_ratio1)*ultraEdge.obj1.x + key_ratio1*ultraEdge.obj2.x
+        square1_y = (1-key_ratio1)*ultraEdge.obj1.y + key_ratio1*ultraEdge.obj2.y
+        square2_x = key_ratio2*ultraEdge.obj1.x + (1-key_ratio2)*ultraEdge.obj2.x
+        square2_y = key_ratio2*ultraEdge.obj1.y + (1-key_ratio2)*ultraEdge.obj2.y
+    }
+    else {  
+        //not yet implemented
+    }
+    undrawSelectionCircle(square1_x, square1_y, NODE_DRAW_RADIUS+1)
+    undrawSelectionCircle(square2_x, square2_y, NODE_DRAW_RADIUS+1)
+
+    //redraw the edge objects and their seleciton indicators
+    if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+        draw_iconizedGroup(ultraEdge.obj1)
+        if(selected_iconizedGroups.has(ultraEdge.obj1)) {
+            select_iconizedGroup(ultraEdge.obj1)
+        }
+    }
+    else {
+        draw_node(ultraEdge.obj1)
+        if(selected_nodes.has(ultraEdge.obj1)) {
+            select_node(ultraEdge.obj1)
+        }
+    }
+    if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+        draw_iconizedGroup(ultraEdge.obj2)
+        if(selected_iconizedGroups.has(ultraEdge.obj2)) {
+            select_iconizedGroup(ultraEdge.obj2)
+        }
+    }
+    else {
+        draw_node(ultraEdge.obj2)
+        if(selected_nodes.has(ultraEdge.obj2)) {
+            select_node(ultraEdge.obj2)
+        }
+    }
+
+    draw_all_edges()
+    draw_all_ultraEdges()
+    //could be clobbering some selected edges and ultraEdges so redraw them (could be more careful about this)
+    for(const e of selected_edges) {
+        select_edge(e)
+    }
+    for(const u of selected_ultraEdges) {
+        if(!equalUltraEdges(u, ultraEdge)) {
+            select_ultraEdge(u)
+        }
+    }
+    selected_ultraEdges.delete(ultraEdge)
+}
+
+function equalUltraEdges(uEdge1, uEdge2) { 
+    if(edge_type == TYPE_UNDIRECTED) {
+        return ((uEdge1.obj1 == uEdge2.obj1 && uEdge1.obj2 == uEdge2.obj2) ||
+        (uEdge1.obj1 == uEdge2.obj2 && uEdge1.obj2 == uEdge2.obj1))
+    }
+    else {
+        return uEdge1.obj1 == uEdge2.obj1 && uEdge1.obj2 == uEdge2.obj2
+    }
+}
+
+ function draw_all_iconizedGroups() {
+    for(let icoGroup of iconizedGroups) {
+        draw_iconizedGroup(icoGroup)
+    }
+}
+
+function draw_iconizedGroup(icoGroup) {
+    drawPolygon("mainCanvas", icoGroup.x, icoGroup.y, icoGroup.radius,
+        icoGroup.num_sides, icoGroup.fill_color, icoGroup.label)
+}
+
+function erase_iconizedGroup(icoGroup) {
+    drawPolygon("mainCanvas", icoGroup.x, icoGroup.y, icoGroup.radius, icoGroup.num_sides, "White", "")
+}
+
+
+function drawPolygon(canvasId, x, y, radius, sides, fill_color, label) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  if (sides < 3) return;
+  ctx.beginPath();
+  if(fill_color.toLowerCase() != "white") {
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 2;
+  }
+  else {
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 4;
+  }
+  let initial_angle = -Math.PI/2
+  if(sides == 4) {
+    initial_angle = -Math.PI/4
+  }
+  const angle = (Math.PI * 2) / sides;
+  ctx.moveTo(x + radius * Math.cos(initial_angle), y + radius * Math.sin(initial_angle));
+  for (let i = 1; i <= sides; i++) {
+    ctx.lineTo(
+      x + radius * Math.cos(initial_angle + angle * i),
+      y + radius * Math.sin(initial_angle + angle * i)
+    );
+  }
+  ctx.closePath();
+  ctx.fillStyle = fill_color
+  ctx.fill()
+  ctx.stroke();
+
+  let font_size = radius*2/5
+  ctx.font = '' + font_size + 'pt Arial';  //8-14 works
+  if(fill_color == "cyan" || fill_color == "chartreuse" || fill_color == "orange") {
+    ctx.fillStyle = 'black'; // Text color
+  }
+  else {
+    ctx.fillStyle = 'white';
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y);
+}
+
+function draw_ultraEdge(ultraEdge) {
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = EDGE_COLOR
+            ctx.lineWidth = EDGE_WIDTH*2
+            ctx.setLineDash([10, 5]);
+            ctx.moveTo(ultraEdge.obj1.x, ultraEdge.obj1.y);
+            ctx.lineTo(ultraEdge.obj2.x, ultraEdge.obj2.y); 
+            ctx.stroke();
+            ctx.closePath()
+            ctx.setLineDash([]);
+        }
+        else {
+            draw_directed_ultraEdge(ultraEdge)
+        }
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {  
+            draw_iconizedGroup(ultraEdge.obj1)
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj2)
+        }
+    }
+    else {
+        drawUltraSelfLoop(ultraEdge.obj1, ultraEdge.dir)
+        draw_iconizedGroup(ultraEdge.obj1)
+    }
+}
+
+function erase_ultraEdge(ultraEdge) {
+    if(ultraEdge.obj1 != ultraEdge.obj2) {
+        if(edge_type == TYPE_UNDIRECTED) {
+            ctx.beginPath()
+            ctx.strokeStyle = "white"
+            ctx.lineWidth = EDGE_WIDTH*4
+            ctx.moveTo(ultraEdge.obj1.x, ultraEdge.obj1.y);
+            ctx.lineTo(ultraEdge.obj2.x, ultraEdge.obj2.y); 
+            ctx.stroke();
+            ctx.closePath()
+        }
+        else {
+            erase_directed_ultraEdge(ultraEdge)
+        }
+        if(ultraEdge.obj1.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj1)
+        }
+        else {
+            draw_node(ultraEdge.obj1)
+        }
+        if(ultraEdge.obj2.hasOwnProperty("num_sides")) {
+            draw_iconizedGroup(ultraEdge.obj2)
+        }
+        else {
+            draw_node(ultraEdge.obj2)
+        }
+    }
+    else {
+        eraseUltraSelfLoop(ultraEdge.obj1, ultraEdge.dir)
+    }
+}
+
+function draw_directed_ultraEdge(ultraEdge) {
+    fromX = ultraEdge.obj1.x
+    toX = ultraEdge.obj2.x
+    fromY = ultraEdge.obj1.y
+    toY = ultraEdge.obj2.y
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(-dy, -dx);
+    let tempEdge = Edge()
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(ultraEdge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.strokeStyle = EDGE_COLOR
+    ctx.lineWidth = EDGE_WIDTH*1.5
+    ctx.setLineDash([10, 5]);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(midX + ARROW_HEAD_LENGTH*1.25 * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH*1.25 * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(midX, midY);
+    ctx.lineTo(midX + ARROW_HEAD_LENGTH*1.25 * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH*1.25 * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.setLineDash([]);
+    ctx.fillStyle = EDGE_COLOR
+    ctx.fill();
+}
+
+function erase_directed_ultraEdge(ultraEdge) {
+     fromX = ultraEdge.obj1.x
+    toX = ultraEdge.obj2.x
+    fromY = ultraEdge.obj1.y
+    toY = ultraEdge.obj2.y
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(-dy, -dx);
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(ultraEdge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+
+    ctx.beginPath();
+    ctx.strokeStyle = "white"
+    ctx.lineWidth = EDGE_WIDTH*3
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.lineWidth = EDGE_WIDTH*3
+    ctx.strokeStyle = "white"
+    ctx.moveTo(midX + ARROW_HEAD_LENGTH*1.25 * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH*1.25 * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(midX, midY);
+    ctx.lineTo(midX + ARROW_HEAD_LENGTH*1.25 * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH*1.25 * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = "white"
+    ctx.fill();
+    ctx.stroke();
+}
+
+function drawSelectionSquare(x, y, side_length, color) { 
+    const sideLength = side_length;
+    const top_leftX = x - side_length/2; // x-coordinate of the top-left corner
+    const top_leftY = y - side_length/2; // y-coordinate of the top-left corner
+    ctx.beginPath()
+    ctx.strokeStyle = color; // Set stroke color
+    line_width = 1
+    if(color == UNSELECT_COLOR) {
+        line_width += 2
+    }
+    ctx.lineWidth = line_width; // Set line width 
+    ctx.strokeRect(top_leftX, top_leftY, sideLength, sideLength); 
+    ctx.stroke()
+    ctx.closePath()
+}
+
+function drawSelectionCircle(x, y, radius) { //used for selecting edges
+    ctx.beginPath()
+    ctx.strokeStyle = "blue";
+    //ctx.moveTo(x, y);
+    ctx.arc(x, y, radius, 0, 2*Math.PI)
+    ctx.fillStyle = EDGE_SELECT_COLOR;
+    ctx.fill();
+    ctx.lineWidth = 1
+    ctx.stroke();
+    ctx.closePath()
+}
+
+function undrawSelectionCircle(x, y, radius) {  //used for unselecting edges
+    ctx.beginPath()
+    ctx.strokeStyle = "white";
+    //ctx.moveTo(x, y);
+    ctx.arc(x, y, radius, 0, 2*Math.PI)
+    ctx.fillStyle = "white";
+    ctx.fill();
+    ctx.lineWidth = 3
+    ctx.stroke();
+    ctx.closePath()
+}
+function getSmartArrowOffsetPct(e) {  
+    if(e.hasOwnProperty("node1")) {
+        edge_length = Math.sqrt((e.node2.y - e.node1.y)*(e.node2.y - e.node1.y) + 
+                        (e.node2.x - e.node1.x)*(e.node2.x - e.node1.x))
+    }
+    else { //e is an UltraEdge
+        edge_length = Math.sqrt((e.obj2.y - e.obj1.y)*(e.obj2.y - e.obj1.y) + 
+                        (e.obj2.x - e.obj1.x)*(e.obj2.x - e.obj1.x))
+    }
+    CRITICAL_LENGTH = 300
+    if(edge_length > CRITICAL_LENGTH) {
+        return ARROW_OFFSET_PCT
+    }
+    else {
+        return (edge_length/CRITICAL_LENGTH)*ARROW_OFFSET_PCT + ((CRITICAL_LENGTH-edge_length)/CRITICAL_LENGTH)*(ARROW_OFFSET_PCT + (1-ARROW_OFFSET_PCT)*ARROW_OFFSET_PCT)
+    }
+}
+
+function drawSelectionTriangle(edge) {
+    fromX = edge.node1.x
+    toX = edge.node2.x
+    fromY = edge.node1.y
+    toY = edge.node2.y
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(-dy, -dx);
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(edge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+    ctx.strokeStyle = "blue";
+    ctx.beginPath();
+    ctx.moveTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(midX, midY);
+    ctx.lineTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = EDGE_SELECT_COLOR
+    ctx.fill();
+    ctx.stroke()
+}
+
+function toggle_select_node(node) {
+    if(selected_nodes.has(node)) {
+        unselect_node(node)
+    }
+    else {
+        select_node(node)
+    }
+}
+
+function toggle_select_edge(edge) {
+    if(selected_edges.has(edge)) {
+        unselect_edge(edge)
+    }
+    else {
+        select_edge(edge)
+    }
+}
+
+function select_node(node) {
+    drawSelectionSquare(node.x - NODE_DRAW_RADIUS, node.y - NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, NODE_SELECT_COLOR)
+    drawSelectionSquare(node.x + NODE_DRAW_RADIUS, node.y - NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, NODE_SELECT_COLOR)
+    drawSelectionSquare(node.x + NODE_DRAW_RADIUS, node.y + NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, NODE_SELECT_COLOR)
+    drawSelectionSquare(node.x - NODE_DRAW_RADIUS, node.y + NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, NODE_SELECT_COLOR)
+    selected_nodes.add(node)
+}
+
+function unselect_node(node) {
+    drawSelectionSquare(node.x - NODE_DRAW_RADIUS, node.y - NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, UNSELECT_COLOR)
+    drawSelectionSquare(node.x + NODE_DRAW_RADIUS, node.y - NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, UNSELECT_COLOR)
+    drawSelectionSquare(node.x + NODE_DRAW_RADIUS, node.y + NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, UNSELECT_COLOR)
+    drawSelectionSquare(node.x - NODE_DRAW_RADIUS, node.y + NODE_DRAW_RADIUS, NODE_DRAW_RADIUS*3/2, UNSELECT_COLOR)
+    draw_node(node)
+    //redraw any very close nodes
+    for(const n of nodes) {
+        dist = Math.sqrt(Math.pow((n.x-node.x),2) + Math.pow((n.y-node.y),2))
+        if(dist < 3*NODE_DRAW_RADIUS) {
+            draw_node(n)
+        }
+    }
+    //redraw edges (could be impairing not just edges from this node but other very close edges....)
+    draw_all_edges()
+    for(const e of selected_edges) {
+        select_edge(e)
+    }
+    selected_nodes.delete(node)
+}
+
+function select_edge(edge) {
+    alreadyInSelectedSet = false
+    for(e of selected_edges) {
+        if(equalEdges(e, edge)) {
+            alreadyInSelectedSet = true
+        }
+    }
+    if(!alreadyInSelectedSet) {
+        selected_edges.add(edge)
+    }
+    edge_length = Math.sqrt(Math.pow((edge.node1.x-edge.node2.x),2) + Math.pow((edge.node1.y-edge.node2.y),2))
+    key_ratio = (edge_length - 2*(NODE_DRAW_RADIUS+1))/edge_length
+    square1_x = (1-key_ratio)*edge.node1.x + key_ratio*edge.node2.x
+    square1_y = (1-key_ratio)*edge.node1.y + key_ratio*edge.node2.y
+    square2_x = key_ratio*edge.node1.x + (1-key_ratio)*edge.node2.x
+    square2_y = key_ratio*edge.node1.y + (1-key_ratio)*edge.node2.y
+    drawSelectionCircle(square1_x, square1_y, NODE_DRAW_RADIUS+1)
+    drawSelectionCircle(square2_x, square2_y, NODE_DRAW_RADIUS+1)
+
+    if(edge_type == TYPE_DIRECTED) {
+        drawSelectionTriangle(edge)
+    }
+}
+
+function unselect_edge(edge) {
+    edge_length = Math.sqrt(Math.pow((edge.node1.x-edge.node2.x),2) + Math.pow((edge.node1.y-edge.node2.y),2))
+    key_ratio = (edge_length - 2*(NODE_DRAW_RADIUS+1))/edge_length
+    square1_x = (1-key_ratio)*edge.node1.x + key_ratio*edge.node2.x
+    square1_y = (1-key_ratio)*edge.node1.y + key_ratio*edge.node2.y
+    square2_x = key_ratio*edge.node1.x + (1-key_ratio)*edge.node2.x
+    square2_y = key_ratio*edge.node1.y + (1-key_ratio)*edge.node2.y
+    undrawSelectionCircle(square1_x, square1_y, NODE_DRAW_RADIUS+1)
+    undrawSelectionCircle(square2_x, square2_y, NODE_DRAW_RADIUS+1)
+
+    //redraw the edge nodes and their seleciton indicators
+    draw_node(edge.node1)
+    draw_node(edge.node2)
+    if(selected_nodes.has(edge.node1)) {
+        select_node(edge.node1)
+    }
+    if(selected_nodes.has(edge.node2)) {
+        select_node(edge.node2)
+    }
+    draw_all_edges()
+     //could be clobbering some selected edges so redraw them (could be more careful about this)
+     for(const e of selected_edges) {
+        if(!equalEdges(e, edge)) {
+            select_edge(e)
+        }
+    }
+    selected_edges.delete(edge)
+}
+
+function drawConstantBoxFlagPole(node) {
+    ctx.beginPath()
+    ctx.strokeStyle = "Blue"
+    ctx.lineWidth = CONSTANT_BOX_OFFSET_X/3
+    ctx.moveTo(node.x, node.y - NODE_DRAW_RADIUS);
+    ctx.lineTo(node.x, node.y - CONSTANT_FLAGPOLL_TOP_OFFSET - CONSTANT_BOX_HEIGHT); 
+    ctx.stroke();
+    ctx.closePath()
+}
+
+function eraseConstantBoxFlagPole(node) {
+    ctx.beginPath()
+    ctx.strokeStyle = "White"
+    ctx.lineWidth = CONSTANT_BOX_OFFSET_X/2
+    ctx.moveTo(node.x, node.y - NODE_DRAW_RADIUS);
+    ctx.lineTo(node.x, node.y - CONSTANT_FLAGPOLL_TOP_OFFSET - CONSTANT_BOX_HEIGHT); 
+    ctx.stroke();
+    ctx.closePath()
+}
+
+function isViableDrag(event) {
+    if(event.button == 0) {
+        if (Math.abs(event.clientX - canvas.offsetLeft - DIVIDING_LINE_LOC) <= DIVIDING_LINE_BUFFER)  {  
+                //reject if too close to dividing line
+            return false
+        }
+        else if(event.clientY - canvas.offsetTop < TOP_BUFFER) {  //reject if in top buffer
+            //return false
+            return true    //no longer rejecting these
+        }
+        else {
+            return true
+        }
+    }
+    else {
+        return false
+    }
+}
+
+function isClickInAnOrderInputBox(event) {
+    const cursor = getComputedStyle(event.target).cursor;  //the text cursor gives screwy coordinates....
+    return cursor == "text"
+}
+
+function process_click(event) {
+    x = event.clientX - canvas.offsetLeft
+    y = event.clientY - canvas.offsetTop
+
+    if(isClickInAnOrderInputBox(event)) {
+        return false
+    }
+
+    if(wasDragging) {
+        wasDragging = false
+        return false
+    }
+    else if (Math.abs(x - DIVIDING_LINE_LOC) <= DIVIDING_LINE_BUFFER) {  //reject if too close to dividing line
+        return false
+    }
+    else if(y < TOP_BUFFER) {  //reject if in top buffer
+        return false
+    }
+    else {
+        return true
+    }
+}
+
+function clearSelectionFromAllButNode(node) {
+    selected_nodes_list = Array.from(selected_nodes)
+    for(let i=0; i<selected_nodes_list.length; i++) {
+        if(selected_nodes_list[i] != node) {
+            unselect_node(selected_nodes_list[i])
+        }
+    }
+    selected_edge_list = Array.from(selected_edges)
+    for(let i=0; i<selected_edge_list.length; i++) {
+        unselect_edge(selected_edge_list[i])
+    }
+}
+
+function clearSelectionFromAllButEdge(edge) {
+    selected_nodes_list = Array.from(selected_nodes)
+    for(let i=0; i<selected_nodes_list.length; i++) {
+        unselect_node(selected_nodes_list[i])
+    }
+    selected_edge_list = Array.from(selected_edges)
+    for(let i=0; i<selected_edge_list.length; i++) {
+        if(selected_edge_list[i] != edge) {
+            unselect_edge(selected_edge_list[i])
+        }
+    }
+}
+
+function clearSelection() {
+    selected_nodes_list = Array.from(selected_nodes)
+    for(let i=0; i<selected_nodes_list.length; i++) {
+        unselect_node(selected_nodes_list[i])
+    }
+    selected_edge_list = Array.from(selected_edges)
+    for(let i=0; i<selected_edge_list.length; i++) {
+        unselect_edge(selected_edge_list[i])
+    }
+}
+
+function getPointToDirectedEdgeDistance(point, edge) { //here the target is the direction triangle
+    let fromX = edge.node1.x
+    let toX = edge.node2.x
+    let fromY = edge.node1.y
+    let toY = edge.node2.y
+    SMART_ARROW_OFFSET_PCT = getSmartArrowOffsetPct(edge)
+    const midX = (1-SMART_ARROW_OFFSET_PCT)*fromX + SMART_ARROW_OFFSET_PCT*toX;
+    const midY = (1-SMART_ARROW_OFFSET_PCT)*fromY + SMART_ARROW_OFFSET_PCT*toY;
+
+    return Math.sqrt((point.x - midX)*(point.x - midX) + (point.y - midY)*(point.y - midY))
+}
+
+function getPointToUndirectedEdgeDistance(point, edge) { //here the target is the entire edge
+    let A = B = C = 0
+    if(edge.node1.x == edge.node2.x) {
+        B = 1
+        C = -1*edge.node1.x
+    }
+    else {
+        A = edge.node2.y - edge.node1.y
+        B = edge.node2.x - edge.node1.x
+        C = edge.node2.x*edge.node1.y - edge.node2.y*edge.node1.x
+    }
+
+    pt_line_dist = Math.abs(A*point.x - B*point.y + C)/Math.sqrt(A*A + B*B)
+
+    edge_length = Math.sqrt(Math.pow((edge.node1.x-edge.node2.x),2) + Math.pow((edge.node1.y-edge.node2.y),2))
+    test_distance1 = Math.sqrt(Math.pow((edge.node1.x-point.x),2) + Math.pow((edge.node1.y-point.y),2))
+    test_distance2 = Math.sqrt(Math.pow((edge.node2.x-point.x),2) + Math.pow((edge.node2.y-point.y),2))
+    
+    if(test_distance1 < edge_length && test_distance2 < edge_length) {
+        return pt_line_dist
+    }
+    else {
+        return edge_length  //we want to reject these clicks so we don't bother with the exact calculation here....
+                            //Modify to do proper calculation here if needed
+    }
+}
+
+
+
+function getPointToEdgeDistance(point, edge) { //used to determine if user has clicked on an edge
+    if(edge_type == TYPE_UNDIRECTED) {
+        return getPointToUndirectedEdgeDistance(point, edge)
+    }
+    else {
+        return getPointToDirectedEdgeDistance(point, edge)
+    }
+}
+
+  prior_width = 0; 
+  prior_height = 0;
+  wasDragging = false
+
+  function smartClearRect(event) {
+    deltaX = 1
+      deltaY = 1
+      if(prior_width < 0) {
+        deltaX = -1
+      }
+      if(prior_height < 0) {
+        deltaY = -1
+      }
+      keepSelections = false
+      if(event.shiftKey || event.metaKey) { 
+        keepSelections = true
+      }
+      ctx.clearRect(startX-deltaX, startY-deltaY, prior_width+2*deltaX, prior_height+2*deltaY);
+      const rect = new Rectangle(startX-deltaX, startY-deltaY, prior_width+2*deltaX, prior_height+2*deltaY)
+      for(const node of nodes) {
+        if(nodeInRect(node, rect)) {
+            draw_node(node)
+            if(keepSelections && selected_nodes.has(node)) {
+                select_node(node)
+            }
+        }
+      }
+      draw_all_edges()
+      if(keepSelections) {
+        for(const edge of selected_edges) {
+            select_edge(edge)
+        }
+      }
+      drawDividingLine()
+  }
+
+  function redrawRectangle(x, y, width, height) {
+    ctx.clearRect(x, y, width, height)
+    draw_all_edges()
+    for(let edge of selected_edges) {
+        select_edge(edge)
+    }
+    draw_all_ultraEdges()
+    for(let ultraEdge of selected_ultraEdges) {
+        select_ultraEdge(ultraEdge)
+    }
+    draw_all_nodes()
+    for(let node of selected_nodes) {
+        select_node(node)
+    }
+    draw_all_iconizedGroups()
+    for(let icoGroup of selected_iconizedGroups) {
+        select_iconizedGroup(icoGroup)
+    }
+    drawDividingLine()
+  }
+
+  function createNodeOrderingBox(node) {
+    const ORDERING_BOX_WIDTH = 20 //was `17
+    const ORDERING_BOX_HEIGHT = 15
+
+    if(node.order == NO_ORDER) {
+        max_order_on_this_side = NO_ORDER
+        some_nodes_have_orders = false
+        for(let n of nodes) {
+            if(n.order != NO_ORDER) {
+                some_nodes_have_orders = true
+                if((n.x < DIVIDING_LINE_LOC && node.x < DIVIDING_LINE_LOC) || (n.x > DIVIDING_LINE_LOC && node.x > DIVIDING_LINE_LOC)) {
+                    if(n.order > max_order_on_this_side) {
+                        max_order_on_this_side = n.order
+                    }
+                }
+            }
+        }
+
+        if(some_nodes_have_orders || orderings_are_being_displayed) {
+            if(max_order_on_this_side > NO_ORDER) {
+                node.order = Math.floor(max_order_on_this_side + 1)
+            }
+            else {
+                node.order = 1
+            }
+        }
+    }
+
+    orderInputBox = createTextBox(node.x + ORDERING_BOX_OFFSET_X, node.y + ORDERING_BOX_OFFSET_Y, node.order, 
+                    ORDERING_BOX_WIDTH, ORDERING_BOX_HEIGHT)
+    node_id_to_inputBox_map.set(node.id, orderInputBox)
+    return orderInputBox
+  }
+
+  function orderNodesbyId() {
+    left_hand_nodes = []
+    right_hand_nodes = []
+    for(let node of nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            left_hand_nodes.push(node)
+        }
+        else {
+            right_hand_nodes.push(node)
+        }
+    }
+    left_hand_nodes.sort((a,b) => {a.id - b.id});
+    right_hand_nodes.sort((a,b) => {a.id - b.id});
+    for(i=0; i<left_hand_nodes.length; i++) {
+        left_hand_nodes[i].order = i+1
+    }
+    for(i=0; i<right_hand_nodes.length; i++) {
+        right_hand_nodes[i].order = i+1
+    }
+  }
+
+  function nodesAreAllUnordered() {
+    for(let node of nodes) {
+        if(node.order != NO_ORDER) {
+            return false
+        }
+    }
+
+    return true
+  }
+
+  function displayNodeOrderings() {
+    const ORDERING_BOX_OFFSET_X = -15
+    const ORDERING_BOX_OFFSET_Y = 15
+    const ORDERING_BOX_WIDTH = 17
+    const ORDERING_BOX_HEIGHT = 15
+    if(nodesAreAllUnordered()) {
+        orderNodesbyId()
+    }
+    for(let node of nodes) {
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        orderInputBox.style.left = "" + (node.x + ORDERING_BOX_OFFSET_X) + "px"
+        orderInputBox.style.top = "" + (node.y + ORDERING_BOX_OFFSET_Y) + "px"
+        orderInputBox.style.display = "initial"
+        if(node.order != NO_ORDER) {
+            orderInputBox.value = node.order
+        }
+        else {
+            orderInputBox.value = ''
+        }
+    }
+  }
+
+  function hideNodeOrderings() {
+    for(let node of nodes) {
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        orderInputBox.style.display = "none"
+    }
+  }
+
+  function createTextBox(x, y, value, width, height) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.style.position = 'absolute';
+        input.style.left = x + 'px';
+        input.style.top = y + 'px';
+        input.style.width = width + 'px';
+        input.style.height = height + 'px';
+        input.style.textAlign = 'center'
+        input.style.fontSize = "8pt"
+        input.disabled = true
+        input.maxLength = 3
+        input.pattern = "[0-9]{3}"
+        input.style.backgroundColor = "white"
+        if(value != NO_ORDER && !isNaN(value)) {
+            input.value = value
+        }
+        
+        
+        document.body.appendChild(input);
+
+        input.addEventListener('input', function(event) {
+            const allowedChars = /^[0-9.-]*$/; // Allows only numbers
+            if (!allowedChars.test(this.value)) {
+                beep()
+                this.value = this.value.replace(/[^0-9.-]/g, ''); //Removes invalid characters
+            }
+        });
+
+        input.addEventListener('blur', function(event) {
+            for(let node of nodes) {
+                ibox = node_id_to_inputBox_map.get(node.id)
+                if(ibox == this) {
+                    node.order = Number(this.value)
+                    if(isNaN(node.order) || node.order == 0) {
+                        node.order = NO_ORDER
+                        ibox.value = ''
+                    }
+                }
+            }
+        });
+       
+       
+        input.addEventListener('keyup', function(event) {
+            event.stopPropagation()   //Don't propagate deletes to selected nodes and other things like that
+        });
+
+
+        return input;
+    }   
+
+    function createConstantBox(x, y, value, width, height) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.style.position = 'absolute';
+        input.style.left = x + 'px';
+        input.style.top = y + 'px';
+        input.style.width = width + 'px';
+        input.style.height = height + 'px';
+        input.style.textAlign = 'center'
+        input.style.fontSize = "8pt"
+        input.style.border = "2px solid"
+        input.style.borderColor = "Blue"
+        input.disabled = true  //uncomment on game_play page!
+        input.value = value
+        input.maxLength = 3
+        input.style.backgroundColor = "yellow"        
+        
+        document.body.appendChild(input);
+
+
+        input.addEventListener('blur', function(event) {
+            for(let node of nodes) {
+                cbox = node_id_to_constantBox_map.get(node.id)
+                if(cbox == this) {
+                    node.constant = this.value
+                }
+            }
+        });
+       
+        input.addEventListener('keyup', function(event) {
+            event.stopPropagation()   //Don't propagate deletes to selected nodes and other things like that
+        });
+
+
+        return input;
+    } 
+  
+  function redrawAll() {
+    minX = canvas.width
+    maxX = 0
+    minY = canvas.height
+    maxY = 0
+    for(let node of nodes) {
+        if(node.x < minX) {
+            minX = node.x
+        }
+        if(node.x > maxX) {
+            maxX = node.x
+        }
+        if(node.y < minY) {
+            minY = node.y
+        }
+        if(node.y > maxY) {
+            maxY = node.y
+        }
+    }
+    for(let icoGroup of iconizedGroups) {
+        if(icoGroup.x < minX) {
+            minX = icoGroup.x
+        }
+        if(icoGroup.x > maxX) {
+            maxX = icoGroup.x
+        }
+        if(icoGroup.y < minY) {
+            minY = icoGroup.y
+        }
+        if(icoGroup.y > maxY) {
+            maxY = icoGroup.y
+        }
+    }
+    REDRAW_BUFF = 100
+    if(maxX >= minX && maxY >= minY) {    //there could just be a single node or a bunch of horizontal/vertical nodes
+        redrawRectangle(minX-REDRAW_BUFF, minY-REDRAW_BUFF, maxX-minX+2*REDRAW_BUFF, maxY-minY+2*REDRAW_BUFF)
+    }
+  }
+
+  function nodeInRect(node, rect) {
+    tolerance = NODE_DRAW_RADIUS
+    rect_left = Math.min(rect.x, rect.x + rect.width) - tolerance
+    rect_right = Math.max(rect.x, rect.x + rect.width) + tolerance 
+    rect_top = Math.min(rect.y, rect.y + rect.height) - tolerance
+    rect_bottom = Math.max(rect.y, rect.y + rect.height) + tolerance
+    return rect_left <= node.x && node.x <= rect_right && rect_top <= node.y && node.y <= rect_bottom
+  }
+
+  function drawDragRectangle(event) {
+      smartClearRect(event)
+      const width = endX - startX;
+      const height = endY - startY;
+      ctx.beginPath()
+      ctx.lineWidth = 1;
+      //ctx.globalAlpha = 0.5; 
+      ctx.strokeStyle = 'red';
+      ctx.setLineDash([10, 5]);
+      ctx.strokeRect(startX, startY, width, height);
+      ctx.setLineDash([]);
+      //ctx.globalAlpha = 1.0;
+      prior_width = width
+      prior_height = height
+      ctx.closePath()
+    }
+
+    function selectAll() {
+        for(const node of nodes) {
+            select_node(node)
+        }
+        for(const edge of edges) {
+            select_edge(edge)
+        }
+    }
+
+
+  document.addEventListener('mousedown', function(event) {
+    console.log('document got mousedown')
+    killClickEvent = true
+    if(isViableDrag(event)) {
+        //isDragging = true;  //commenting this out prevents dragging
+        startX = event.clientX - canvas.offsetLeft;
+        startY = event.clientY - canvas.offsetTop;
+        dragging_node = undefined
+        if(active_grouping_rectangle == undefined || !isPointWithinToleranceOfDistanceToGroupingRectangle(startX, startY)) {
+            dragging_node = get_clicked_on_node(event)  //undefined if not dragging a node
+            if(active_grouping_rectangle != undefined) {
+                drawGroupingRectangle(UNSELECT_COLOR)
+                redrawAll()  //could potentiall be a bit more clever about redrawing
+                active_grouping_rectangle = undefined
+            }
+            else {
+                killClickEvent = false
+            }
+        }
+    }
+  });
+
+  async function showExplodedGame() {
+    let wh_string = "width=" + (canvas.width-25) + ",height=" + canvas.height + ",left=25" 
+    const newWindow = window.open("ef_game_play.html", '_blank', wh_string)
+    await delay(250); 
+    newWindow.postMessage(getExplodedGameJSON(), '*');  
+  }
+
+  async function showOneLevelExpandedGame() {
+    let wh_string = "width=" + (canvas.width-25) + ",height=" + canvas.height + ",left=25"    
+    const newWindow = window.open("ef_game_play.html", '_blank', wh_string)
+    await delay(250); 
+    newWindow.postMessage(getOneLevelExpandedGameJSON(), '*');  
+  }
+
+  document.addEventListener('keydown', function(event) {
+    if(event.key == "e" && event.shiftKey && event.metaKey) {
+        //createExplodedGraph(nodes, edges, iconizedGroups, ultraEdges, innerIconizedGroups) 
+        showExplodedGame()
+    }
+    else if(event.key == "e" && event.metaKey) {
+        createOneLevelExpandedGraph() 
+        showOneLevelExpandedGame()
+    }
+    //else if(event.key == "t") {  //for debug purposes only!!
+    //    let moveNode = findInnerNodeById(3)
+    //    getVisibleParent(moveNode)
+    //}
+    
+  });
+
+  function drawSelfLoop(node, dir=DIR_UP) {  //will also eventuall add an arrow if edges are directed
+        let x = node.x
+        let y = node.y
+        ctx.lineWidth = EDGE_WIDTH;  
+        ctx.strokeStyle = 'black';
+        ctx.beginPath();
+        if(dir==DIR_UP) {
+            ctx.arc(x, y-SELF_LOOP_RADIUS, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else if(dir==DIR_RIGHT) {
+            ctx.arc(x+SELF_LOOP_RADIUS, y, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else if(dir==DIR_DOWN) {
+            ctx.arc(x, y+SELF_LOOP_RADIUS, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else {
+            ctx.arc(x-SELF_LOOP_RADIUS, y, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        ctx.stroke(); 
+
+        if(edge_type == TYPE_DIRECTED) {
+            let dx = dy = 0;
+            let midX = node.x
+            let midY = node.y
+            if(dir == DIR_UP) {
+                dx = 10  //arrow should point right
+                midX += ARROW_HEAD_LENGTH/2
+                midY -= 2*(SELF_LOOP_RADIUS)
+            }
+            else if(dir == DIR_RIGHT) {
+                dy = 10  //arrow should point down
+                midX += 2*(SELF_LOOP_RADIUS)
+                midY += ARROW_HEAD_LENGTH/2
+            }
+            else if(dir == DIR_DOWN) {
+                dx = -10  //arrow should point to the left
+                midX -= ARROW_HEAD_LENGTH/2
+                midY += 2*(SELF_LOOP_RADIUS)
+            }
+            else {
+                dy = -10  //arrow should pont left
+                midX -= 2*(SELF_LOOP_RADIUS)
+                midY -= ARROW_HEAD_LENGTH/2
+            }
+            let angle = Math.atan2(-dy, -dx);
+
+            ctx.beginPath();
+            ctx.moveTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle - Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(midX, midY);
+            ctx.lineTo(midX + ARROW_HEAD_LENGTH * Math.cos(angle + Math.PI / 6), midY + ARROW_HEAD_LENGTH * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fillStyle = EDGE_COLOR
+            ctx.fill();
+        }
+    }
+
+    function eraseSelfLoop(node, dir=DIR_UP) {  //will also eventuall add an arrow if edges are directed 
+        let x = node.x
+        let y = node.y
+        ctx.lineWidth = EDGE_WIDTH*2;  
+        ctx.strokeStyle = 'white';
+        ctx.beginPath();
+        if(dir==DIR_UP) {
+            ctx.arc(x, y-SELF_LOOP_RADIUS, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else if(dir==DIR_RIGHT) {
+            ctx.arc(x+SELF_LOOP_RADIUS, y, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else if(dir==DIR_DOWN) {
+            ctx.arc(x, y+SELF_LOOP_RADIUS, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+        else {
+            ctx.arc(x-SELF_LOOP_RADIUS, y, SELF_LOOP_RADIUS, 0, 2 * Math.PI);
+        }
+
+        ctx.stroke(); 
+
+        if(edge_type == TYPE_DIRECTED) {  //a lot of redundant code here!!
+            let dx = dy = 0;
+            let midX = node.x
+            let midY = node.y
+            ERASURE_BUFF = 2
+            if(dir == DIR_UP) {
+                dx = 10  //arrow should point right
+                midX += (ARROW_HEAD_LENGTH+ERASURE_BUFF)/2
+                midY -= 2*(SELF_LOOP_RADIUS)
+            }
+            else if(dir == DIR_RIGHT) {
+                dy = 10  //arrow should point down
+                midX += 2*(SELF_LOOP_RADIUS)
+                midY += (ARROW_HEAD_LENGTH+ERASURE_BUFF)/2
+            }
+            else if(dir == DIR_DOWN) {
+                dx = -10  //arrow should point to the left
+                midX -= (ARROW_HEAD_LENGTH+ERASURE_BUFF)/2
+                midY += 2*(SELF_LOOP_RADIUS)
+            }
+            else {
+                dy = -10  //arrow should pont left
+                midX -= 2*(SELF_LOOP_RADIUS)
+                midY -= (ARROW_HEAD_LENGTH+ERASURE_BUFF)/2
+            }
+            let angle = Math.atan2(-dy, -dx);
+
+            ctx.beginPath();
+            ctx.lineWidth = 2*EDGE_WIDTH
+            ctx.strokeStyle = "white"
+            ctx.moveTo(midX + (ARROW_HEAD_LENGTH+ERASURE_BUFF) * Math.cos(angle - Math.PI / 6), midY + (ARROW_HEAD_LENGTH+ERASURE_BUFF) * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(midX, midY);
+            ctx.lineTo(midX + (ARROW_HEAD_LENGTH+ERASURE_BUFF)  * Math.cos(angle + Math.PI / 6), midY + (ARROW_HEAD_LENGTH+ERASURE_BUFF) * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fillStyle = "white"
+            ctx.fill();
+        }
+        draw_node(node)
+    }
+
+  function areThereNodesOnBothSides() {
+    let nodesOnLeft = nodesOnRight = false
+    for(let node of nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            nodesOnLeft = true
+            if(nodesOnLeft && nodesOnRight) {
+                return true
+            }
+        }
+        else {
+            nodesOnRight = true
+            if(nodesOnLeft && nodesOnRight) {
+                return true
+            }
+        }
+    }
+    return false
+  }
+
+  function isPointWithinToleranceOfDistanceToGroupingRectangle(x, y) {  //this is a tiny bit crude 
+    tolerance = 10
+    if((x >= active_grouping_rectangle.x && x <= active_grouping_rectangle.x + active_grouping_rectangle.width) && 
+            ((y >= active_grouping_rectangle.y - tolerance && y <= active_grouping_rectangle.y + tolerance) ||
+            (y >= active_grouping_rectangle.y + active_grouping_rectangle.height - tolerance && y <= active_grouping_rectangle.y + active_grouping_rectangle.height + tolerance))) {
+                return true
+    }
+    if((y >= active_grouping_rectangle.y && y <= active_grouping_rectangle.y + active_grouping_rectangle.height) &&
+            ((x >= active_grouping_rectangle.x - tolerance && x <= active_grouping_rectangle.x + tolerance) ||
+            (x >= active_grouping_rectangle.x + active_grouping_rectangle.width - tolerance && x <= active_grouping_rectangle.x + active_grouping_rectangle.width + tolerance))) {
+                return true
+    }
+    
+    return false
+     
+  }
+
+  function testSafeGroupingRectangleDragPoint(dx, dy) {
+    //If too high or too low, return false regardless of the case
+    if((active_grouping_rectangle.y + dy + GROUPING_BOX_BUFFER <= TOP_BUFFER) || 
+            (active_grouping_rectangle.y + active_grouping_rectangle.height + dy - GROUPING_BOX_BUFFER >= canvas.height - NODE_DRAW_RADIUS)) {
+        return false
+    }
+    
+    //case grouping box just on the left
+    if(active_grouping_rectangle.x + active_grouping_rectangle.width - GROUPING_BOX_BUFFER < DIVIDING_LINE_LOC) {
+        return active_grouping_rectangle.x + dx + GROUPING_BOX_BUFFER > DIVIDING_LINE_BUFFER && 
+                    active_grouping_rectangle.x + active_grouping_rectangle.width + dx - GROUPING_BOX_BUFFER < DIVIDING_LINE_LOC - DIVIDING_LINE_BUFFER
+    }
+    //case grouping box just on the right
+    if(active_grouping_rectangle.x + GROUPING_BOX_BUFFER > DIVIDING_LINE_LOC) {
+        return active_grouping_rectangle.x + dx + GROUPING_BOX_BUFFER > DIVIDING_LINE_LOC + DIVIDING_LINE_BUFFER && 
+                    active_grouping_rectangle.x + active_grouping_rectangle.width + dx - GROUPING_BOX_BUFFER < canvas.width - NODE_DRAW_RADIUS
+    }
+    //case grouping box spans both sides
+    return active_grouping_rectangle.x + dx + GROUPING_BOX_BUFFER > DIVIDING_LINE_BUFFER && 
+        exists_side_grouping_control_point + dx < DIVIDING_LINE_LOC - DIVIDING_LINE_BUFFER &&
+        forall_side_grouping_control_point + dx > DIVIDING_LINE_LOC + DIVIDING_LINE_BUFFER && 
+        active_grouping_rectangle.x + active_grouping_rectangle.width + dx - GROUPING_BOX_BUFFER < canvas.width - NODE_DRAW_RADIUS      
+  }
+
+  function handleGroupingRectangleDrag() {
+    let dx = endX - startX
+    let dy = endY - startY
+    if(!testSafeGroupingRectangleDragPoint(dx, dy)) {
+        return
+    }
+    startX = endX
+    startY = endY
+    for(let node of selected_nodes) {
+        node.x += dx
+        node.y += dy
+        orderInputBox = node_id_to_inputBox_map.get(node.id)
+        orderInputBox.style.left = "" + (node.x + ORDERING_BOX_OFFSET_X) + "px"
+        orderInputBox.style.top = "" + (node.y + ORDERING_BOX_OFFSET_Y) + "px"
+        constantBox = node_id_to_constantBox_map.get(node.id)
+        if(constantBox != undefined) {
+            constantBox.style.left = "" + (node.x + CONSTANT_BOX_OFFSET_X) + "px"
+            constantBox.style.top = "" + (node.y + CONSTANT_BOX_OFFSET_Y) + "px"
+        }
+    }
+    redrawAll()
+    drawGroupingRectangle(UNSELECT_COLOR)
+    active_grouping_rectangle.x += dx
+    active_grouping_rectangle.y += dy
+    exists_side_grouping_control_point += dx
+    forall_side_grouping_control_point += dx
+    drawGroupingRectangle("grey")
+  }
+
+  document.addEventListener('mousemove', function(event) {
+    BUFF = 100 //Buffer for redrawing around node mins and maxes
+    endX = event.clientX - canvas.offsetLeft;
+    endY = event.clientY - canvas.offsetTop;
+    if(active_grouping_rectangle != undefined) {
+        if(isPointWithinToleranceOfDistanceToGroupingRectangle(endX, endY)) {
+            document.body.style.cursor = "move"
+        }
+        else {
+            document.body.style.cursor = "default"
+        }
+    }
+    else {
+        document.body.style.cursor = "default"
+    }
+    if (!isDragging) return;
+
+    if(active_grouping_rectangle != undefined) {
+        handleGroupingRectangleDrag(event)
+    }
+    else if(Math.abs(endX-startX) > 5 || Math.abs(endY-startY) > 5 ) {
+        wasDragging = true
+        if(dragging_node == undefined) {
+            drawDragRectangle(event);
+        }
+        else {
+            if(//dragging_node.edges.size == 0 ||   //don;t allow dragging of a node too close to dividing line,
+                                                    //too close to left edge,  or above top buffer
+                                                    
+                endY > TOP_BUFFER && endX > DIVIDING_LINE_BUFFER && endX < canvas.width - NODE_DRAW_RADIUS && endY < canvas.height - NODE_DRAW_RADIUS &&
+                ((startX < DIVIDING_LINE_LOC - DIVIDING_LINE_BUFFER && 
+                        endX < DIVIDING_LINE_LOC - DIVIDING_LINE_BUFFER) ||
+                (startX > DIVIDING_LINE_LOC + DIVIDING_LINE_BUFFER && 
+                        endX > DIVIDING_LINE_LOC + DIVIDING_LINE_BUFFER))) {
+                dragging_node.x = endX
+                dragging_node.y = endY
+                orderInputBox = node_id_to_inputBox_map.get(dragging_node.id)
+                orderInputBox.style.left = "" + (endX + ORDERING_BOX_OFFSET_X) + "px"
+                orderInputBox.style.top = "" + (endY + ORDERING_BOX_OFFSET_Y) + "px"
+                constantBox = node_id_to_constantBox_map.get(dragging_node.id)
+                if(constantBox != undefined) {
+                    constantBox.style.left = "" + (endX + CONSTANT_BOX_OFFSET_X) + "px"
+                    constantBox.style.top = "" + (endY + CONSTANT_BOX_OFFSET_Y) + "px"
+                }
+                minX = minY = INFINITE
+                maxX = maxY = INFINITE
+                for(let node of nodes) {
+                    if(node.x - BUFF < minX) {
+                        minX = node.x - BUFF
+                    }
+                    if(node.x + BUFF > maxX) {
+                        maxX = node.x + BUFF
+                    }
+                    if(node.y - BUFF < minY) {
+                        minY = node.y - BUFF
+                    }
+                    if(node.y + BUFF > maxY) {
+                        maxY = node.x + BUFF
+                    }
+                }
+                redrawRectangle(minX, minY, maxX-minX, maxY-minY)
+            }
+        }
+    }
+      
+  }, true);
+
+  document.addEventListener('mouseup', function(event) {
+    isDragging = false;
+    if(wasDragging) {
+        if(active_grouping_rectangle == undefined) {
+            smartClearRect(event)
+            if(dragging_node == undefined) {
+                selectionRect = new Rectangle(startX, startY, endX - startX, endY - startY)
+                if(!event.shiftKey && !event.metaKey) { 
+                    clearSelection()
+                }
+                for(const node of nodes) {
+                    if(nodeInRect(node, selectionRect)) {
+                        select_node(node)
+                    }
+                }
+                for(const edge of edges) {
+                    if(nodeInRect(edge.node1, selectionRect) && nodeInRect(edge.node2, selectionRect))
+                    select_edge(edge)
+                }
+            }
+            else {
+                draw_all_nodes()
+                for(let node of selected_nodes) {
+                    select_node(node)
+                }
+                for(let edge of selected_edges) {
+                    select_edge(edge)
+                }
+            }
+        }
+    }
+
+  }, true);
+
+  async function rejectDuplicatorMove() {
+    //beep()
+    const context = new AudioContext();  //use this code in the beep() function!!
+    const oscillator = context.createOscillator();
+    const gainNode = context.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(context.destination);
+
+    oscillator.type = 'sine'; // You can change the type: sine, square, triangle, sawtooth
+    oscillator.frequency.value = 600; // Frequency in Hz
+    gainNode.gain.setValueAtTime(0.1, context.currentTime); // Adjust volume (0 to 1)
+
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.2); // Duration of the beep (in seconds)
+    alert("Duplicator must play on the opposite side from Spoiler!")  //change to using a custom alert box so beep() is heard first
+  }
+
+  async function launchIconizedGroupPopup(icoGroup) {   
+    wh_string = "width=" + canvas.width/2 + ",height=" + canvas.height      
+    if(icoGroup.x > DIVIDING_LINE_LOC) {
+        wh_string += (",left=" + canvas.width/2)
+    }
+    const newWindow = window.open("ef_game_play_popup.html", "_blank", wh_string)
+    await delay(250); 
+    newWindow.postMessage(getGameJSON(icoGroup), '*'); 
+  }
+
+  document.addEventListener('click', function(event) {  
+    if (contextMenu.style.display != '') { // && !contextMenuDiv.contains(event.target)) {
+      contextMenu.style.display = '';
+      return
+    }
+    if(killClickEvent || !process_click(event)) {
+        return
+    }
+    if(round_counter > num_rounds) {
+        beep()
+        return
+    }
+
+    icoGroup = get_clicked_on_iconizedGroup(event)    
+    if(icoGroup != undefined) {
+       let intended_play_side = EXISTS_SIDE
+        if(icoGroup.x > DIVIDING_LINE_LOC) {
+            intended_play_side = FORALL_SIDE
+        }
+        if(whose_move == DUPLICATOR_MOVE && intended_play_side == last_side_played) {
+            rejectDuplicatorMove()
+        }
+        else {
+            launchIconizedGroupPopup(icoGroup) 
+        }
+        return
+    }
+
+    node = get_clicked_on_node(event)
+    side_played = EXISTS_SIDE
+    if(node == undefined) {
+        clearSelection()
+        return
+    }
+    else {
+        if(node.x > DIVIDING_LINE_LOC) {
+            side_played = FORALL_SIDE
+        }
+    }
+    
+    if(whose_move == DUPLICATOR_MOVE) {  //make sure that if the player was Duplicator she did not play on the same side as Spoiler
+        if(side_played == last_side_played) {
+            rejectDuplicatorMove()
+            return
+        }
+    }
+
+    moveBox = createTextBox(node.x - NODE_DRAW_RADIUS, node.y - NODE_DRAW_RADIUS + NAV_BAR_MARGIN, 2*NODE_DRAW_RADIUS, 2*NODE_DRAW_RADIUS)
+    moveBox.style.color = MOVE_TEXT_COLORS[(round_counter-1) % MOVE_TEXT_COLORS.length]
+    moveBox.style.backgroundColor = MOVE_BG_COLORS[(round_counter-1) % MOVE_BG_COLORS.length]
+    moveBox.style.fontSize = "8pt"
+    moveBox.value = round_counter.toString()
+    moveBox.style.textAlign = "center";
+    moveBox.readOnly=true
+    moveBox.disabled = true
+    moveBox.style.borderWidth = '0px';
+    if(whose_move == DUPLICATOR_MOVE) {
+        round_counter++
+    }
+    else {
+        if(side_played == EXISTS_SIDE) {
+            inputGameSig.value += '\u2203'
+        }
+        else {
+            inputGameSig.value += '\u2200'
+        }
+    }
+    move = new Move(node, moveBox, side_played, last_side_played)
+    move_queue.push(move)
+    redo_queue = []
+    enableUndo()
+    disableRedo()
+    whose_move = (whose_move + 1) % 2
+    last_side_played = side_played
+ 
+    if(whose_move == SPOILER_MOVE) {
+        reportIfGameDecided()
+    }
+
+    handleComputerMoves()
+  });
+
+  function reportIfGameDecided() {   
+    if(round_counter > num_rounds) {  
+        reportGameEnd()
+    }
+    else {
+        if(!areGraphsPartiallyIsomorphic()) {
+            inputWhoWon.value = "Spoiler wins!"
+        }
+        else {
+            inputWhoWon.value = ""
+        }
+    }
+  }
+
+  function reportGameEnd() {
+    if(areGraphsPartiallyIsomorphic()) {
+        inputWhoWon.value = "Duplicator wins!"
+    }
+    else {
+        inputWhoWon.value = "Spoiler wins!"
+    }
+  }
+
+  function deleteSelectedNodes() {
+    selected_nodes_list = Array.from(selected_nodes)
+    for(let i=0; i<selected_nodes_list.length; i++) {
+        unselect_node(selected_nodes_list[i])
+        delete_node(selected_nodes_list[i])
+    }
+  }
+
+  function deleteSelectedEdges() {
+    selected_edge_list = Array.from(selected_edges)
+    for(let i=0; i<selected_edge_list.length; i++) {
+        unselect_edge(selected_edge_list[i])
+        delete_edge(selected_edge_list[i])
+    }
+  }
+
+  function getAllPairsOfSelectedElements() {  //only return pairs on the same side
+    pairs = []
+    selected_nodes_list = Array.from(selected_nodes)
+    for (let i = 0; i < selected_nodes_list.length - 1; i++) {
+        for (let j = i + 1; j < selected_nodes_list.length; j++) {
+            if((selected_nodes_list[i].x - DIVIDING_LINE_LOC)*(selected_nodes_list[j].x - DIVIDING_LINE_LOC) > 0) {
+                pairs.push([selected_nodes_list[i], selected_nodes_list[j]]);
+            }
+        }
+    }
+    return pairs
+  }
+
+  function equalEdges(edge1, edge2) { 
+    if(edge_type == TYPE_UNDIRECTED) {
+        return ((edge1.node1 == edge2.node1 && edge1.node2 == edge2.node2) ||
+        (edge1.node1 == edge2.node2 && edge1.node2 == edge2.node1))
+    }
+    else {
+        return edge1.node1 == edge2.node1 && edge1.node2 == edge2.node2
+    }
+  }
+
+  function edgeInEdges(edge) {
+    for(const e of edges) {
+        if(equalEdges(e, edge)) {
+            return true
+        }
+    }
+    return false
+  }
+
+  function getYCoordOfLowestNode(whichSide) {
+    lowestY = 0
+    for(let node of nodes) {
+        if(whichSide == BOTH_SIDES || (whichSide == EXISTS_SIDE && node.x < DIVIDING_LINE_LOC) || 
+            (whichSide == FORALL_SIDE && node.x > DIVIDING_LINE_LOC)) {
+            if(node.y > lowestY) {
+                lowestY = node.y
+            }
+        }
+    }
+
+    return lowestY
+  }
+
+  function getYCoordOfHighestNode(whichSide) {
+    highestY = 0
+    for(let node of nodes) {
+        if(whichSide == BOTH_SIDES || (whichSide == EXISTS_SIDE && node.x < DIVIDING_LINE_LOC) || 
+            (whichSide == FORALL_SIDE && node.x > DIVIDING_LINE_LOC)) {
+            if(node.y < highestY) {
+                highestY = node.y
+            }
+        }
+    }
+
+    return highestY
+  }
+
+  document.addEventListener('keyup', function(event) {
+    if(event.key == "Delete" || event.key == "Backspace") {
+        deleteSelectedNodes()
+        deleteSelectedEdges() 
+    }
+    else if(event.key === 'Escape' || event.key === 'Esc' || event.keyCode === 27) {
+        contextMenu.style.display = "none"
+    }
+    else if(event.key == "e" || event.key == "E") {
+        if(edge_type == TYPE_DIRECTED) {
+            if(edges.size > 0) {
+                beep()
+                return
+            }
+            else {
+                edge_type = TYPE_UNDIRECTED
+            }
+        }
+        if(selected_nodes.size >= 2) {
+            pairs = getAllPairsOfSelectedElements()  //will only return pairs on the same side of the dividing line
+            clearSelection()
+            for(let i=0; i< pairs.length; i++) {
+                edge = new Edge(pairs[i][0], pairs[i][1])
+                if(!edgeInEdges(edge)) {
+                    create_edge(edge)
+                }
+            }
+        }
+    }
+    else if(event.key == "d") {
+        if(edge_type == TYPE_UNDIRECTED) {
+            if(edges.size > 0) {
+                beep()
+                return
+            }
+            else {
+                edge_type = TYPE_DIRECTED
+            }
+        }
+        if(selected_nodes.size >= 2) {
+            pairs = getAllPairsOfSelectedElements()  //will only return pairs on the same side of the dividing line
+            clearSelection()
+            for(let i=0; i< pairs.length; i++) {
+                edge = new Edge(pairs[i][0], pairs[i][1])
+                if(!edgeInEdges(edge)) {
+                    create_edge(edge)
+                }
+            }
+        }
+    }
+    else if(event.key == "r") {  //reverse the direction of any selected directed edges
+        if(edge_type == TYPE_UNDIRECTED || selected_edges.size == 0) {
+            beep()
+            return
+        }
+        for(edge of selected_edges) {
+            erase_edge(edge)
+            temp_node = edge.node1
+            edge.node1 = edge.node2
+            edge.node2 = temp_node
+            draw_edge(edge) 
+            select_edge(edge)   
+        }
+    }
+    else if(event.key == "R") {  //add an additional edge in the reverse direction (needs to be completely implemented)
+                                //also need to be able to directly add a second directed edge by clicking on respective 
+                                // ordered vertices
+        if(edge_type == TYPE_UNDIRECTED || selected_edges.size == 0) {
+            beep()
+            return
+        }
+        for(let edge of selected_edges) {
+            reverse_edge = new Edge(edge.node2, edge.node1)
+            edge.node1.edges.add(reverse_edge)
+            edge.node2.edges.add(reverse_edge)
+            edges.add(reverse_edge)
+            draw_edge(reverse_edge)    
+        }
+        clearSelection()
+    }
+    else if(event.key == 'g') {
+        //handle grouping/ungrouping
+        if(selected_nodes.size == 0) {
+            beep()
+            return
+        }
+        else if(active_grouping_rectangle != undefined) {
+            killGroupingRectangle()
+        }
+        else {
+            let minX = canvas.width
+            let maxX = 0
+            let minY = canvas.height
+            let maxY = 0
+            let right_mostX_on_left_side = 0
+            let left_mostX_on_right_side = canvas.width
+            for(let node of selected_nodes) {
+                if(node.x < minX) {
+                    minX = node.x
+                }
+                if(node.x > maxX) {
+                    maxX = node.x
+                }
+                if(node.y < minY) {
+                    minY = node.y
+                }
+                if(node.y > maxY) {
+                    maxY = node.y
+                }
+                if(node.x < DIVIDING_LINE_LOC && node.x > right_mostX_on_left_side) {
+                    right_mostX_on_left_side = node.x
+                }
+                else if(node.x > DIVIDING_LINE_LOC && node.x < left_mostX_on_right_side) {
+                    left_mostX_on_right_side = node.x
+                }
+            }
+            active_grouping_rectangle = new Rectangle(minX - GROUPING_BOX_BUFFER, minY - GROUPING_BOX_BUFFER, 
+                    maxX - minX + 2*GROUPING_BOX_BUFFER, maxY - minY + 2*GROUPING_BOX_BUFFER)
+            if(maxX > DIVIDING_LINE_LOC && minX < DIVIDING_LINE_LOC) {
+                exists_side_grouping_control_point = right_mostX_on_left_side
+                forall_side_grouping_control_point = left_mostX_on_right_side
+            }
+            else {
+                exists_side_grouping_control_point = undefined
+                forall_side_grouping_control_point = undefined
+            }
+            drawGroupingRectangle("grey")
+        }
+    }
+  });
+
+  function killGroupingRectangle() {
+    drawGroupingRectangle(UNSELECT_COLOR)
+    active_grouping_rectangle = undefined
+    redrawAll()
+  }
+
+  function drawGroupingRectangleHandle(x, y, color) {
+    ctx.beginPath()
+    ctx.strokeStyle = color; // Set stroke color
+    line_width = 1
+    if(color == UNSELECT_COLOR) {
+        line_width += 2
+    }
+    ctx.lineWidth = line_width; // Set line width 
+    ctx.fillStyle = "white"; 
+    ctx.fillRect(x-5, y-5, 10, 10); 
+    ctx.strokeRect(x-5, y-5, 10, 10); 
+    ctx.stroke()
+    ctx.closePath()
+  }
+
+  function drawGroupingRectangle(color) {
+    ctx.beginPath()
+    ctx.strokeStyle = color; // Set stroke color
+    line_width = 1
+    if(color == UNSELECT_COLOR) {
+        line_width += 2
+    }
+    ctx.lineWidth = line_width; // Set line width 
+    ctx.setLineDash([10, 5]); // 5px line, 10px gap
+    ctx.strokeRect(active_grouping_rectangle.x, active_grouping_rectangle.y, active_grouping_rectangle.width, active_grouping_rectangle.height); 
+    ctx.stroke()
+    ctx.closePath()
+    ctx.setLineDash([])
+
+    drawGroupingRectangleHandle(active_grouping_rectangle.x, active_grouping_rectangle.y, color)
+    drawGroupingRectangleHandle(active_grouping_rectangle.x + active_grouping_rectangle.width, active_grouping_rectangle.y, color)
+    drawGroupingRectangleHandle(active_grouping_rectangle.x, active_grouping_rectangle.y + active_grouping_rectangle.height, color)
+    drawGroupingRectangleHandle(active_grouping_rectangle.x + active_grouping_rectangle.width, active_grouping_rectangle.y + active_grouping_rectangle.height, color)
+  }
+
+
+
+  function createButton(text, x, y) {
+    const button = document.createElement('button');
+    button.textContent = text;
+    button.style.fontSize = "16px"
+    button.style.position = 'absolute';
+    button.style.left = `${x}px`;
+    button.style.top = `${y}px`;
+    document.body.appendChild(button);
+    return button;
+  }
+
+  
+  //who won area
+  resultLabel = document.createTextNode('Game Result: ')
+  const span0 = document.createElement('span');  
+  span0.style.fontSize = "12pt"  
+  span0.style.fontFamily = 'Arial, sans-serif';
+  span0.style.position = 'absolute';
+  span0.style.left = '10px'; 
+  span0.style.top = '14px';
+  document.body.appendChild(span0)
+  span0.appendChild(resultLabel)
+  inputWhoWon = document.createElement('input');
+  inputWhoWon.type = 'text';
+  inputWhoWon.style.position = 'absolute';
+  inputWhoWon.style.left = '115px';
+  inputWhoWon.style.top = '12px';
+  inputWhoWon.style.width = '150px';
+  inputWhoWon.style.height = '18px';
+  inputWhoWon.style.textAlign = 'left'
+  inputWhoWon.style.fontSize = "14pt"
+  inputWhoWon.style.color = "red"
+  inputWhoWon.value = ''
+  inputWhoWon.disabled = true
+  document.body.appendChild(inputWhoWon)
+
+  //exists button stuff
+  existsButtonPressed = false
+  const existsButton = document.createElement('img');
+  existsButton.src = 'exists_button.png';
+  existsButton.draggable = false
+  existsButton.width = 100
+  existsButton.height = 25
+  const span1 = document.createElement('span');
+  document.body.appendChild(span1)
+  span1.appendChild(existsButton)
+  span1.style.fontSize = "20px"
+  span1.style.position = 'absolute';
+  loc_exists = DIVIDING_LINE_LOC/2 - 50
+  span1.style.left = loc_exists.toString()+'px'; 
+  span1.style.top = '10px';
+  /*existsButton.addEventListener('click', function() {
+        if(!existsButtonPressed) {
+            existsButton.src = 'exists_button_pressed_red2.png';
+            forallButtonPressed = false;
+            forallButton.src = 'forall_button.png';
+        }
+        else {
+            existsButton.src = 'exists_button.png';
+        }
+        existsButtonPressed = !existsButtonPressed;
+  });
+  existsButton.addEventListener('mousedown', function() {
+        existsButton.src = 'exists_button_pressed.png';
+  });
+  existsButton.addEventListener('mouseleave', function() {
+    if(existsButtonPressed) {
+        existsButton.src = 'exists_button_pressed_red2.png';
+    }
+    else {
+        existsButton.src = 'exists_button.png';
+    }
+  });*/
+  const span1a = document.createElement('span');  //this sits underneath the button and is just 
+                                                  //so we can catch select all
+  span1a.style.fontSize = "0px"  //effectively hidden
+  span1a.style.position = 'absolute';
+  span1a.style.left = loc_exists.toString()+'px'; 
+  span1a.style.top = '10px';
+  document.body.appendChild(span1a)
+  textNode1 = document.createTextNode('\u2203 Side');
+  span1a.appendChild(textNode1)
+
+  /*span1.addEventListener("mouseover", function() {
+    span1.style.cursor = "pointer";
+  });
+  span1.addEventListener("mouseleave", function() {
+    span1.style.cursor = "default";
+  });*/
+
+  //forall button stuff
+  forallButtonPressed = false
+  const forallButton = document.createElement('img');
+  forallButton.src = 'forall_button.png';
+  forallButton.draggable = false
+  forallButton.width = 100
+  forallButton.height = 25
+  const span2 = document.createElement('span');
+  document.body.appendChild(span2)
+  span2.appendChild(forallButton)
+  span2.style.fontSize = "20px"
+  span2.style.position = 'absolute';
+  loc_forall = 3*DIVIDING_LINE_LOC/2 - 50
+  span2.style.left = loc_forall.toString()+'px'; 
+  span2.style.top = '10px';
+  
+  const span2a = document.createElement('span');  //this sits underneath the button and is just 
+                                                  //so we can catch select all
+  span2a.style.fontSize = "0px"  //effectively hidden
+  span2a.style.position = 'absolute';
+  span2a.style.left = loc_forall.toString()+'px'; 
+  span2a.style.top = '10px';
+  document.body.appendChild(span2a)
+  textNode2 = document.createTextNode('\u2200 Side');
+  span2a.appendChild(textNode2)
+
+  /*span2.addEventListener("mouseover", function() {
+    span2.style.cursor = "pointer";
+  });
+  span2.addEventListener("mouseleave", function() {
+    span2.style.cursor = "default";
+  });*/
+
+  numRdsLabel = document.createTextNode('Num Rounds: ')
+  const span3 = document.createElement('span');  
+  span3.style.fontSize = "12pt"  
+  span3.style.fontFamily = 'Arial, sans-serif';
+  span3.style.position = 'absolute';
+  span_loc = 3*DIVIDING_LINE_LOC/4 - 105
+  span3.style.left = span_loc.toString()+'px'; 
+  span3.style.top = '14px';
+  document.body.appendChild(span3)
+  span3.appendChild(numRdsLabel)
+
+  inputNumRds = document.createElement('input');
+  inputNumRds.type = 'text';
+  inputNumRds.style.position = 'absolute';
+  inputNumRds.style.left = (3*DIVIDING_LINE_LOC/4) + 'px';
+  inputNumRds.style.top = '12px';
+  inputNumRds.style.width = '30px';
+  inputNumRds.style.height = '18px';
+  inputNumRds.style.textAlign = 'center'
+  inputNumRds.style.fontSize = "12pt"
+  inputNumRds.maxLength = 3
+  inputNumRds.pattern = "[0-9]{3}"
+  inputNumRds.value = ''
+  inputNumRds.addEventListener('blur', function(event) {
+    if(!isNaN(inputNumRds.value)) {
+        num_rounds = Number(inputNumRds.value)
+        if(num_rounds >= round_counter) {
+            inputWhoWon.value = ''
+        }
+        else {
+            if(num_rounds+1 == round_counter && whose_move == SPOILER_MOVE) {
+                reportGameEnd()
+            }
+            else {
+                let played_rounds = round_counter
+                if(whose_move == SPOILER_MOVE) {
+                    played_rounds--
+                }
+                if(played_rounds < round_counter) {
+                    alert(played_rounds + " rounds have already been played. You must set the number of rounds to at least this number.")
+                    inputNumRds.value = '' + played_rounds
+                    this.focus()
+                }
+            }
+        }
+    }
+    else {
+        beep()
+        inputNumRds.focus()
+    }
+  });
+  document.body.appendChild(inputNumRds)
+
+  rdsThusFarLabel = document.createTextNode('Rounds Thus Far: ')
+  const span4 = document.createElement('span');  
+  span4.style.fontSize = "12pt"  
+  span4.style.fontFamily = 'Arial, sans-serif';
+  span4.style.position = 'absolute';
+  span_loc = DIVIDING_LINE_LOC - 60
+  span4.style.left = span_loc.toString()+'px'; 
+  span4.style.top = '14px';
+  document.body.appendChild(span4)
+  span4.appendChild(rdsThusFarLabel)
+
+  inputGameSig = document.createElement('input');
+  inputGameSig.type = 'text';
+  inputGameSig.style.position = 'absolute';
+  inputGameSig.style.left = DIVIDING_LINE_LOC + 75 + 'px';
+  inputGameSig.style.top = '12px';
+  inputGameSig.style.width = '120px';
+  inputGameSig.style.height = '18px';
+  inputGameSig.style.textAlign = 'left'
+  inputGameSig.style.fontSize = "14pt"
+  inputGameSig.value = ''
+  inputGameSig.disabled = true
+  document.body.appendChild(inputGameSig)
+
+  const undo_button = document.createElement('button');
+  document.body.appendChild(undo_button)
+  undo_button.style.width = "26px" 
+  undo_button.style.height = "26px"
+  undo_button.style.position = 'absolute';
+  undo_button.style.left = (DIVIDING_LINE_LOC + 210) + 'px'; 
+  undo_button.style.top = '11px';
+  undo_button.disabled = true
+  const undo_img = document.createElement('img');
+  undo_img.src = 'undo_inactive.png';
+  undo_img.width = "15"
+  undo_img.height = "15"
+  undo_button.appendChild(undo_img)
+  undo_button.addEventListener('click', undo_move)
+
+  const redo_button = document.createElement('button');
+  document.body.appendChild(redo_button)
+  redo_button.style.width = "26px"
+  redo_button.style.height = "26px"
+  redo_button.style.position = 'absolute';
+  redo_button.style.left = (DIVIDING_LINE_LOC + 242) + 'px'; 
+  redo_button.style.top = '11px';
+  redo_button.disabled = true
+  const redo_img = document.createElement('img');
+  redo_img.src = 'redo_inactive.png';
+  redo_img.width = "15"
+  redo_img.height = "15"
+  redo_button.appendChild(redo_img)
+  redo_button.addEventListener('click', redo_move)
+
+  compPlaysLabel = document.createTextNode('Computer Plays: ')
+  const span5 = document.createElement('span');  
+  span5.style.fontSize = "12pt"  
+  span5.style.fontFamily = 'Arial, sans-serif';
+  span5.style.position = 'absolute';
+  span_loc = DIVIDING_LINE_LOC + 450
+  span5.style.left = span_loc.toString()+'px'; 
+  span5.style.top = '14px';
+  document.body.appendChild(span5)
+  span5.appendChild(compPlaysLabel)
+
+  compPlaysWhich = document.createElement('input');
+  compPlaysWhich.type = 'text';
+  compPlaysWhich.style.position = 'absolute';
+  compPlaysWhich.style.left = DIVIDING_LINE_LOC + 580 + 'px';
+  compPlaysWhich.style.top = '12px';
+  compPlaysWhich.style.width = '140px';
+  compPlaysWhich.style.height = '18px';
+  compPlaysWhich.style.textAlign = 'left'
+  compPlaysWhich.style.fontSize = "14pt"
+  compPlaysWhich.value = ''
+  compPlaysWhich.disabled = true
+  document.body.appendChild(compPlaysWhich)
+
+  compAnalysisLabel = document.createTextNode('Computer Analysis: ')
+  const span6 = document.createElement('span');  
+  span6.style.fontSize = "11pt"  
+  span6.style.fontFamily = 'Arial, sans-serif';
+  span6.style.position = 'absolute';
+  //span_loc = DIVIDING_LINE_LOC + 420
+  span_loc = 10
+  span6.style.left = span_loc.toString()+'px'; 
+  span6.style.top = window.outerHeight-10 + 'px';
+  document.body.appendChild(span6)
+  span6.appendChild(compAnalysisLabel)
+
+  compAnalysis = document.createElement('input');
+  compAnalysis.type = 'text';
+  compAnalysis.id = 'compAnalysisId'
+  compAnalysis.style.position = 'absolute';
+  //compAnalysis.style.left = DIVIDING_LINE_LOC + 550 + 'px';
+  compAnalysis.style.left = '140px';
+  compAnalysis.style.top = window.outerHeight-10 + 'px';
+  compAnalysis.style.width = '400px';
+  compAnalysis.style.height = '14px';
+  compAnalysis.style.textAlign = 'left'
+  compAnalysis.style.fontSize = "11pt"
+  compAnalysis.value = ''
+  compAnalysis.disabled = true
+  document.body.appendChild(compAnalysis)
+
+  function undo_move() {
+    let move = move_queue.pop()
+    let visibleParent = getVisibleParent(move.node)
+    if(visibleParent != undefined && visibleParent instanceof IconizedGroup) {
+        visibleParent.moveCount--
+    }
+    move.move_box.style.display = 'none'
+    if(whose_move == DUPLICATOR_MOVE) {  //was to be Duplicator's move so we are undoing Spoiler's move
+        inputGameSig.value  = inputGameSig.value.substring(0, inputGameSig.value.length-1)
+    }
+    else {
+        round_counter--
+    }
+    whose_move = (whose_move + 1) % 2
+    last_side_played = move.last_side_played
+    redrawAll()  //very wasteful
+    if(move_queue.length == 0) {
+        disableUndo()
+    }
+    redo_queue.push(move)
+    enableRedo()
+    inputWhoWon.value = ''  
+    reportIfGameDecided()
+  }
+
+  function redo_move() {
+    let move = redo_queue.pop()
+    let visibleParent = getVisibleParent(move.node)
+    if(visibleParent != undefined && visibleParent instanceof IconizedGroup) {
+        visibleParent.moveCount++
+    }
+    move.move_box.style.display = 'initial'
+    if(whose_move == SPOILER_MOVE) {
+        if(move.node.x < DIVIDING_LINE_LOC) {
+            inputGameSig.value  += '\u2203'
+            last_side_played = EXISTS_SIDE
+        }
+        else {
+            inputGameSig.value  += '\u2200'
+            last_side_played = FORALL_SIDE
+        }
+    }
+    else{
+        round_counter++
+    }
+    whose_move = (whose_move + 1) % 2
+    if(redo_queue.length == 0) {
+        disableRedo()
+    }
+    move_queue.push(move)
+    enableUndo()
+    reportIfGameDecided()
+  }
+
+  function enableUndo() {
+    undo_img.src = 'undo.png';
+    undo_button.disabled = false
+  }
+
+  function disableUndo() {
+    undo_img.src = 'undo_inactive.png';
+    undo_button.disabled = true
+  }
+
+  function enableRedo() {
+    redo_img.src = 'redo.png';
+    redo_button.disabled = false
+  }
+
+  function disableRedo() {
+    redo_img.src = 'redo_inactive.png';
+    redo_button.disabled = true
+  }
+
+  function areGraphsPartiallyIsomorphic() {  //does not yet handle equality check!!
+    let move_sequence = ""
+    for(let i=0; i<move_queue.length; i++) {
+        if(i > 0) {
+           move_sequence += ", " 
+        }
+        move_sequence += move_queue[i].node.id
+    }
+    console.log("Doing a partial iso check for position after move_sequence: " + move_sequence)
+    let left_hand_played_nodes = []
+    let right_hand_played_nodes = []
+    //first add the "pre-moves", i.e. implicit moves played on constats; verify that there are the same constants on both sides
+    for(let move of pre_move_queue) {
+        if(move.side_played == EXISTS_SIDE) {
+            constants_in_use_on_left.add(move.node.constant)
+            //left_hand_played_nodes.push(move.node)
+            left_hand_played_nodes.push(fetchById(move.node.id, all_nodes))
+        }
+        else {
+            constants_in_use_on_right.add(move.node.constant)
+            //right_hand_played_nodes.push(move.node)
+            right_hand_played_nodes.push(fetchById(move.node.id, all_nodes))
+        }
+    }
+    if (constants_in_use_on_left.size != constants_in_use_on_right.size) {
+        console.log("Iso check failed.")
+        return false;
+    }
+    for(let c of constants_in_use_on_left) {
+        if(!constants_in_use_on_right.has(c)) {
+            console.log("Iso check failed.")
+            return false
+        }
+    }
+
+    //for(let move of move_queue) {
+    for(let i=0; i<move_queue.length; i++) {
+        if(i < move_queue.length-1 || (move_queue.length % 2 == 0) ) {  //if Duplicator's move ignore the last move
+            let move = move_queue[i]
+            if(move.side_played == EXISTS_SIDE) {
+                //left_hand_played_nodes.push(move.node)
+                left_hand_played_nodes.push(fetchById(move.node.id, all_nodes))
+            }
+            else {
+                //right_hand_played_nodes.push(move.node)
+                right_hand_played_nodes.push(fetchById(move.node.id, all_nodes))
+            }
+        }
+    }
+    //As a 0th order check, make sure that both sets of nodes are the same with respect to the equality relation
+    for(let i = 1; i < left_hand_played_nodes.length; i++) {
+        let lh_node = left_hand_played_nodes[i]
+        lh_index = left_hand_played_nodes.indexOf(lh_node)
+        let rh_node = right_hand_played_nodes[i]
+        rh_index = right_hand_played_nodes.indexOf(rh_node)
+        if(lh_index != rh_index) {
+            console.log("equality check has failed!")
+            console.log("Iso check failed.")
+            return false
+        }
+    }
+    //first check, if nodes are ordered then they are in the same order
+    if(nodes_are_ordered) {
+        safe_left_hand_played_nodes = structuredClone(left_hand_played_nodes)
+        safe_right_hand_played_nodes = structuredClone(right_hand_played_nodes)
+        for(let i=0; i<safe_left_hand_played_nodes.length; i++) {
+            safe_right_hand_played_nodes[i].id = safe_left_hand_played_nodes[i].id
+        }
+        //safe_left_hand_played_nodes.sort((a, b) => a.order*10000 + a.id - b.order*10000 + b.id);
+        //safe_right_hand_played_nodes.sort((a, b) => a.order*10000 + a.id - b.order*10000 + b.id);
+        safe_left_hand_played_nodes.sort((a, b) => a.order - b.order);
+        safe_right_hand_played_nodes.sort((a, b) => a.order - b.order);
+        for(let i=0; i<safe_left_hand_played_nodes.length; i++) {
+            if(safe_right_hand_played_nodes[i].id != safe_left_hand_played_nodes[i].id) {
+                console.log("Iso check failed.")
+                return false
+            }
+        }
+
+        /*safe_right_hand_played_nodes = structuredClone(right_hand_played_nodes)
+        for(let i=0; i<safe_left_hand_played_nodes.length; i++) {
+            safe_left_hand_played_nodes[i].id = safe_right_hand_played_nodes[i].id
+        }
+        for(let i=0; i<safe_left_hand_played_nodes.length; i++) {
+            if(safe_right_hand_played_nodes[i].id != safe_left_hand_played_nodes[i].id) {
+                console.log("Iso check failed.")
+                return false
+            }
+        }*/
+    }
+
+    //Now check reduced subgraphs are the same
+    safe_left_hand_edges = []
+    safe_right_hand_edges = []
+    for(let edge of all_edges) {
+        if(edge.node1.x  < DIVIDING_LINE_LOC) {
+            if(left_hand_played_nodes.includes(edge.node1) && left_hand_played_nodes.includes(edge.node2)) {
+                //safe_edge = new Edge(edge.node1, edge.node2)
+                //safe_left_hand_edges.push(safe_edge)
+                safe_left_hand_edges.push(edge)
+            }
+        }
+        else {
+            if(right_hand_played_nodes.includes(edge.node1) && right_hand_played_nodes.includes(edge.node2)) {
+                //safe_edge = new Edge(edge.node1, edge.node2)
+                //safe_right_hand_edges.push(safe_edge)
+                safe_right_hand_edges.push(edge)
+            }
+        }
+    }
+    if(safe_left_hand_edges.length != safe_right_hand_edges.length) {
+        console.log("Iso check failed.")
+        return false
+    }
+    //console.log("safe_left_hand_edges.length= " + safe_left_hand_edges.length)
+    //next check that every edge on the left hand has a corresponding edge in the right (the reverse holds by the array size correspondence)
+    for(lh_edge of safe_left_hand_edges) {
+        let lh_node1 = lh_edge.node1 
+        let lh_node2 = lh_edge.node2
+        let rh_node1 = rh_node2 = undefined
+        for(let i=0; i<left_hand_played_nodes.length; i++) {
+            let node = left_hand_played_nodes[i]
+            if(node == lh_node1) {
+                rh_node1 = right_hand_played_nodes[i]
+            }
+            if(node == lh_node2) {
+                rh_node2 = right_hand_played_nodes[i]
+            }
+        }
+        let edge_found = false
+        for(rh_edge of safe_right_hand_edges) {
+            if(edge_type == TYPE_DIRECTED) {
+                if(rh_edge.node1 == rh_node1 && rh_edge.node2 == rh_node2) {
+                    edge_found = true
+                    break
+                }
+            }
+            else {
+                if((rh_edge.node1 == rh_node1 && rh_edge.node2 == rh_node2) || (rh_edge.node1 == rh_node2 && rh_edge.node2 == rh_node1)) {
+                    edge_found = true
+                    break
+                }
+            }
+        }
+        if(!edge_found) {
+            console.log("Iso check failed.")
+            return false
+        }
+    }
+
+    console.log("Iso check succeeded.")
+    return true
+  }
+
+
+  document.addEventListener('selectionchange', function(event) {
+    selectedText = document.getSelection().toString()
+    if(selectedText.includes('\u2200') && selectedText.includes('\u2203')) {
+        selectAll()
+        window.getSelection().removeAllRanges()
+    }
+  }, true);
+
+  document.addEventListener('copy', function(event) {
+    cutPending = false
+    handleCopy()
+  }, true);
+
+  document.addEventListener('cut', function(event) {  //nodes and edges should be deleted immediately in this case
+    cutPending = true
+    let all_associated_edges = new Set()  //make sure that all_associated_edges is local
+    for(node of selected_nodes) {
+        all_associated_edges = all_associated_edges.union(node.edges)
+    }
+    all_cut_edges = structuredClone(all_associated_edges)
+    handleCopy()
+    deleteSelectedNodes()
+    deleteSelectedEdges() 
+  }, true);
+
+  function getNodeById(id) {
+    for(node of nodes) {
+        if(node.id == id) {
+            return node
+        }
+    }
+    return undefined
+  }
+
+  function getIconoizedGroupById(id) {
+    for(let icoGroup of iconizedGroups) {
+        if(icoGroup.id == id) {
+            return icoGroup
+        }
+    }
+
+    return undefined
+  }
+
+  function getEdgeByNodeIdPair(id1, id2) {
+    for(edge of edges) {
+        if(edge.node1.id == id1 && edge.node2.id == id2) {
+            return edge
+        }
+    }
+    return undefined
+  }
+
+  function getAllNestedIconizedGroups(icoGroup) {   
+    let allNestedIcos = []
+
+    if(icoGroup == undefined) {
+        for(let i of iconizedGroups) {
+            allNestedIcos.push(coerceToIconizedGroup(i))
+            allNestedIcos = allNestedIcos.concat(getAllNestedIconizedGroups(i))
+        }
+    }
+    else {
+        for(let i of icoGroup.inner_iconizedGroups) {
+            let trueInnerIcoGroup = fetchById(i.id, innerIconizedGroups)
+            allNestedIcos.push(trueInnerIcoGroup)
+            allNestedIcos = allNestedIcos.concat(getAllNestedIconizedGroups(trueInnerIcoGroup))
+        }
+    }
+
+    return allNestedIcos
+  }
+
+  function coerceToNode(n) {
+    if(n instanceof Node) {
+        return n
+    }
+    else {
+        let node = new Node(n.x, n.y, n.id, n.constant)
+        if(n.edges != undefined && n.edges instanceof Set) {
+            node.edges = n.edges
+        }
+        else {
+            node.edges = new Set()
+        }
+        if(n.ultraEdges != undefined && n.ultraEdges instanceof Set) {
+            node.ultraEdges = n.ultraEdges
+        }
+        else {
+            node.ultraEdges = new Set()
+        }
+        node.order = n.order
+        node.parent = n.parent
+        return node
+    }
+
+  }
+
+  function coerceToIconizedGroup(o) {
+    if(o instanceof IconizedGroup) {
+        return o
+    }
+    else {
+        if(o.inner_nodes instanceof Array) {
+            o.inner_nodes = new Set(o.inner_nodes)
+        }
+        else if(!(o.inner_nodes instanceof Set)) {
+            o.inner_node = new Set()
+        }
+        if(o.inner_edges instanceof Array) {
+            o.inner_edges = new Set(o.inner_edges)
+        }
+        else if(!(o.inner_edges instanceof Set)) {
+            o.inner_edges = new Set()
+        }
+        if(o.inner_iconizedGroups instanceof Array) {
+            o.inner_iconizedGroups = new Set(o.inner_iconizedGroups)
+        }
+        else if(!(o.inner_iconizedGroups instanceof Set)) {
+            o.inner_iconizedGroups = new Set()
+        }
+        if(o.inner_ultraEdges instanceof Array) {
+            o.inner_ultraEdges = new Set(o.inner_ultraEdges)
+        }
+        else if(!(o.inner_ultraEdgs instanceof Set)) {
+            o.inner_ultraEdges = new Set()
+        }
+        if(o.ultraEdges instanceof Array) {
+            o.ultraEdges = new Set(o.ultraEdges)
+        }
+        else if(!(o.ultraEdges instanceof Set)) {
+            o.ultraEdges = new Set()
+        }
+
+        let icoGroup = new IconizedGroup(o.inner_nodes, o.inner_edges, o.inner_iconizedGroups, 
+                o.inner_ultraEdges, o.ultraEdges, o.x, o.y, o.num_sides, o.radius, 
+                o.fill_color, o.label)
+        icoGroup.id = o.id
+        iconizedGroup_id_counter--
+        icoGroup.parent = o.parent
+        for(let inner_node of o.inner_nodes) {
+            inner_node.parent = icoGroup
+        }
+        for(let inner_icoGroup of o.inner_iconizedGroups) {
+            inner_icoGroup.parent = icoGroup
+        }
+        return icoGroup
+    }
+
+  }
+
+  function coerceToEdge(e) {
+    if(e instanceof Edge) {
+        return e
+    }
+    else {
+        let edge = new Edge(e.node1, e.node2, e.dir)
+        return edge
+    }
+  }
+
+  function coerceToUltraEdge(u) {
+    if(u instanceof UltraEdge) {
+        return u
+    }
+    else {
+        let ultraEdge = new UltraEdge(u.obj1, u.obj2, u.dir)
+        return ultraEdge
+    }
+  }
+
+  function getOneLevelExpandedGameJSON() {  
+    //this does not properly stringify the edge lists since sets are not properly stringified by JSON.stringify()
+    zoomLevel = getZoomLevel()  
+    zoomPortion = "\"zoom_level\": " + zoomLevel
+    numRoundsPortion = "\"num_rounds\": " + num_rounds
+    edgeTypePortion = "\"edge_type\": " + (edge_type == TYPE_DIRECTED ? "\"directed\"" : "\"undirected\"")
+    orderPortion = "\"node_ordering\": " + nodes_are_ordered
+    nodesPortion = "\"nodes\": " + arrayToJson(Array.from(all_OneLevelNodes))
+    edgesPortion = "\"edges\": " + arrayToJson(Array.from(all_OneLevelEdges))
+    icoGrouPortion =  "\"iconizedGroups\": " + arrayToJson(Array.from(all_OneLevelIconizedGroups))
+    ultraEdgePortion =  "\"ultraEdges\": " + arrayToJson(Array.from(all_OneLevelUltraEdges))
+    innerIcoGroupPortion =  "\"innerIconizedGroups\": " + arrayToJson(Array.from(OneLevelInnerIconizedGroups))  
+    moveQueuePortion = "\"move_queue\": " + arrayToJson(move_queue)
+    
+    return "{" + zoomPortion + ",\n" + numRoundsPortion + ",\n" + edgeTypePortion + ",\n" 
+        + orderPortion + ",\n" + nodesPortion + ",\n" + edgesPortion + ",\n" 
+        + icoGrouPortion + ",\n" + ultraEdgePortion + ",\n" + innerIcoGroupPortion + ",\n"
+        + moveQueuePortion + "}"
+  }
+
+
+  function getExplodedGameJSON() {  
+    //this does not properly stringify the edge lists since sets are not properly stringified by JSON.stringify()
+    zoomLevel = getZoomLevel()  
+    zoomPortion = "\"zoom_level\": " + zoomLevel
+    numRoundsPortion = "\"num_rounds\": " + num_rounds
+    edgeTypePortion = "\"edge_type\": " + (edge_type == TYPE_DIRECTED ? "\"directed\"" : "\"undirected\"")
+    orderPortion = "\"node_ordering\": " + nodes_are_ordered
+    nodesPortion = "\"nodes\": " + arrayToJson(Array.from(all_nodes))
+    edgesPortion = "\"edges\": " + arrayToJson(Array.from(all_edges))
+    icoGroupPortion =  "\"iconizedGroups\": []"
+    ultraEdgePortion =  "\"ultraEdges\": []"
+    innerIcoGroupPortion =  "\"innerIconizedGroups\": []"
+    moveQueuePortion = "\"move_queue\": " + arrayToJson(move_queue)
+    
+    return "{" + zoomPortion + ",\n" + numRoundsPortion + ",\n" + edgeTypePortion + ",\n" 
+        + orderPortion + ",\n" + nodesPortion + ",\n" + edgesPortion + ",\n" 
+        + icoGroupPortion + ",\n" + ultraEdgePortion + ",\n" + innerIcoGroupPortion + ",\n"
+        + moveQueuePortion + "}"
+  }
+
+  function getGameJSON(icoGroup) {
+    let inner_nodes = new Set()
+    for(let n of icoGroup.inner_nodes) {
+        inner_nodes.add(coerceToNode(n))
+    }
+    let inner_edges = new Set()
+    for(let e of icoGroup.inner_edges) {
+        inner_edges.add(coerceToEdge(e))
+    }
+    let inner_icoGroups = new Set()
+    for(let i of icoGroup.inner_iconizedGroups) {
+        //inner_icoGroups.add(coerceToIconizedGroup(i))
+        inner_icoGroups.add(fetchById(i.id, innerIconizedGroups))
+    }
+    let inner_ultraEdges = new Set()
+    for(let u of icoGroup.inner_ultraEdges) {
+        inner_ultraEdges.add(coerceToUltraEdge(u))
+    }
+   
+    let which_side = (icoGroup.x < DIVIDING_LINE_LOC ? EXISTS_SIDE : FORALL_SIDE)
+    return clipifyGameState(which_side, icoGroup.x, icoGroup.y, inner_nodes, inner_edges, inner_icoGroups, inner_ultraEdges)
+  }
+
+  function clipifyGameState(which_side, center_x, center_y, inner_nodes, inner_edges, inner_iconizedGroups, inner_ultraEdges) {
+    
+    zoomLevel = getZoomLevel()
+    zoomPortion = "\"zoom_level\": " + zoomLevel
+    roundCounterPortion = "\"round_counter\":" + round_counter
+    whichSidePortion = "\"which_side\": " + which_side
+    locationPortion = "\"center_x\": " + center_x + ",\"center_y\": " + center_y
+    edgeTypePortion = "\"edge_type\": " + (edge_type == TYPE_DIRECTED ? "\"directed\"" : "\"undirected\"")
+    orderPortion = "\"node_ordering\": " + nodes_are_ordered
+    nodesPortion = "\"nodes\": " + arrayToJson(Array.from(inner_nodes))
+    edgesPortion = "\"edges\": " + arrayToJson(Array.from(inner_edges))
+    icoGrouPortion =  "\"iconizedGroups\": " + arrayToJson(Array.from(inner_iconizedGroups)) //innnerIcos become icos!!
+    ultraEdgePortion =  "\"ultraEdges\": " + arrayToJson(Array.from(inner_ultraEdges))
+    let relative_innerIconizedGroups = []
+    for(let i of inner_iconizedGroups) {
+        relative_innerIconizedGroups = relative_innerIconizedGroups.concat(getAllNestedIconizedGroups(i))
+    }
+    innerIcoGroupPortion =  "\"innerIconizedGroups\": " + arrayToJson(relative_innerIconizedGroups)
+    moveQueuePortion = "\"move_queue\": " + arrayToJson(move_queue)
+
+    
+    return "{" + zoomPortion + ",\n" + roundCounterPortion + ",\n" + whichSidePortion + ",\n" 
+        + locationPortion + ",\n" + edgeTypePortion + ",\n" 
+        + orderPortion + ",\n" + nodesPortion + ",\n" + edgesPortion + ",\n" 
+        + icoGrouPortion + ",\n" + ultraEdgePortion + ",\n" + innerIcoGroupPortion + ",\n" 
+        + moveQueuePortion + "}"
+  }
+
+  function handleCopy() {
+    if(selected_nodes.size > 0) {
+        copied_nodes = structuredClone(selected_nodes)
+        copied_edges = structuredClone(selected_edges)
+
+        //somehow the below does not always work!!
+        copyToClipboard(clipifyNodesAndEdges(copied_nodes, copied_edges))
+    }
+    else {
+        beep()
+    }
+  }
+
+  function isPasteToRepairAMistakenCut() {
+    nodes_on_left = false
+    nodes_on_right = false
+    for(let node of copied_nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            nodes_on_left = true
+        }
+        else if (node.x > DIVIDING_LINE_LOC) {
+            nodes_on_right = true
+        }
+    }
+    if(nodes_on_left && nodes_on_right) {
+        return true
+    }
+    else if(nodes_on_left && (existsButtonPressed || (!forallButtonPressed && endX < DIVIDING_LINE_LOC))) {
+        return true
+    }
+    else if(nodes_on_right && (forallButtonPressed || (!existsButtonPressed && endX > DIVIDING_LINE_LOC))) {
+        return true
+    }
+    else {
+        return false
+    }
+  }
+
+  function pasteToRepairMistakenCut() {  //this is a tricky case - may not be worth it....
+                                         //don't handle if graph on the given side has been changed
+    
+    //make sure that any nodes that copied edges were attached to, 
+    // that were not part of the coped set, still exist!
+    for(let node of copied_nodes) {
+        node.edges = new Set()
+        orderInputBox = createNodeOrderingBox(node)
+        node_id_to_inputBox_map[node.id] = orderInputBox
+        if(orderings_are_being_displayed) {
+            orderInputBox.style.display = "initial"
+        }
+        else {
+            orderInputBox.style.display = "none"
+        }
+    }
+    nodes = nodes.union(copied_nodes)
+    for(let edge of all_cut_edges) {
+        node1 = getNodeById(edge.node1.id)
+        node2 = getNodeById(edge.node2.id)
+        if(node1 != undefined && node2 != undefined) {
+            edge.node1 = node1
+            edge.node2 = node2
+            node1.edges.add(edge)
+            node2.edges.add(edge)
+            edges.add(edge)
+        }
+    }   
+    selected_nodes = copied_nodes  
+    selected_edges = new Set()
+    for(let edge of copied_edges) {
+        sel_edge = getEdgeByNodeIdPair(edge.node1.id, edge.node2.id) 
+        if(sel_edge != undefined) {
+            selected_edges.add(sel_edge)
+        }
+    }
+    redrawAll()
+    copied_nodes = new Set()
+    copied_edges = new Set()
+    cutPending = false
+  }
+
+  document.addEventListener('paste', function(event) {
+    VERTICAL_PASTE_BUFFER = 20
+    //json = readFromClipboard()
+    //clipObject = JSON.parse(json)
+    if(copied_nodes.size == 0) {  //can only copy edges that are between copied nodes!!
+        beep
+        return
+    }
+    else {
+        if(cutPending && isPasteToRepairAMistakenCut()) {
+            pasteToRepairMistakenCut()
+            return
+        }
+        //First remove any edges from the selection for which both nodes are not selected
+        edges_to_remove = new Set()
+        for(let edge of copied_edges) {
+            has_node1 = false
+            has_node2 = false
+            for(node of copied_nodes) {
+                if(edge.node1.id == node.id) {
+                    has_node1 = true
+                    edge.node1 = node
+                }
+                else if(edge.node2.id == node.id) {
+                    has_node2 = true
+                    edge.node2 = node
+                }
+            }
+            if(!has_node1 || !has_node2) {
+                edges_to_remove.add(edge)
+            }
+        }
+        for(let edge of edges_to_remove) {
+            copied_edges.delete(edge)
+        }
+        //Alter node ids so they are distinct from existing node ids; 
+        //Make sure the edge set for the nodes correspond to the edges to be added
+        //Also add the selected_nodes and selected_edges to nodes and edges
+        for(let node of copied_nodes) {
+            node.id = node_id_counter++
+            node.edges = new Set()
+        }
+        for(let edge of copied_edges) {
+            edge.node1.edges.add(edge)
+            edge.node2.edges.add(edge)
+        }
+
+        //decide which side to copy to and reference point of where to copy to
+        which_side_to_copy_to = FORALL_SIDE  //the default
+        //if there are selected nodes on both sides paste must be to both sides
+        //after pasting, pasted nodes should be selected
+        nodes_on_left = false
+        nodes_on_right = false
+        for(let node of copied_nodes) {
+            if(node.x < DIVIDING_LINE_LOC) {
+                nodes_on_left = true
+            }
+            else if (node.x > DIVIDING_LINE_LOC) {
+                nodes_on_right = true
+            }
+        }
+        highesttSelectedY = canvas.height
+        for(let node of copied_nodes) {
+            if(node.y < highesttSelectedY) {
+                highesttSelectedY = node.y
+            }
+        }
+
+        if(nodes_on_left && nodes_on_right) {
+            which_side_to_copy_to = BOTH_SIDES
+            lowestY = Math.max(getYCoordOfLowestNode(BOTH_SIDES), TOP_BUFFER)
+            for(let node of copied_nodes) {
+                node.y += (lowestY - highesttSelectedY) + VERTICAL_PASTE_BUFFER
+            }
+        }
+        else if(nodes_on_left) {
+            if(existsButtonPressed || (!forallButtonPressed && endX < DIVIDING_LINE_LOC)) {
+                which_side_to_copy_to = EXISTS_SIDE
+                lowestY = Math.max(getYCoordOfLowestNode(EXISTS_SIDE), TOP_BUFFER)
+                for(let node of copied_nodes) {
+                    node.y += (lowestY - highesttSelectedY) + VERTICAL_PASTE_BUFFER
+                }
+            }
+            else if(forallButtonPressed|| (!existsButtonPressed && endX > DIVIDING_LINE_LOC)) {
+                which_side_to_copy_to = FORALL_SIDE
+                lowestY = Math.max(getYCoordOfLowestNode(FORALL_SIDE), TOP_BUFFER)
+                for(let node of copied_nodes) {
+                    node.x += DIVIDING_LINE_LOC
+                    node.y += (lowestY - highesttSelectedY) + VERTICAL_PASTE_BUFFER
+                }
+            }
+        }
+        else if(nodes_on_right) {
+            if(existsButtonPressed || (!forallButtonPressed && endX < DIVIDING_LINE_LOC)) {
+                which_side_to_copy_to = EXISTS_SIDE
+                lowestY = Math.max(getYCoordOfLowestNode(EXISTS_SIDE), TOP_BUFFER)
+                for(let node of copied_nodes) {
+                    node.x -= DIVIDING_LINE_LOC
+                    node.y += (lowestY - highesttSelectedY) + VERTICAL_PASTE_BUFFER
+                }
+            }
+            else if(forallButtonPressed|| (!existsButtonPressed && endX > DIVIDING_LINE_LOC)) {
+                which_side_to_copy_to = FORALL_SIDE
+                lowestY = Math.max(getYCoordOfLowestNode(FORALL_SIDE), TOP_BUFFER)
+                for(let node of copied_nodes) {
+                    node.y += (lowestY - highesttSelectedY) + VERTICAL_PASTE_BUFFER
+                }
+            }
+        }
+        //now create the ordering boxes NOTE: nodes should be ordered in the same order as they were copied in 
+        // (keep in left hand and right hand side groups when doing this....)
+        sortedCopiedNodes = Array.from(copied_nodes)
+        sortedCopiedNodes.sort((a,b) => a.order - b.order)
+        for(let node of sortedCopiedNodes) {
+            orderInputBox = undefined
+            if(node.order == NO_ORDER) {
+                orderInputBox = createNodeOrderingBox(node)
+                orderInputBox.value = ''
+                node.order = NO_ORDER
+            }
+            else if(nodes_on_left && which_side_to_copy_to == FORALL_SIDE) {
+                //see if or the order is available - if so, snag it
+                order_available = true
+                for(n of nodes) {
+                    if(n.x > DIVIDING_LINE_LOC && n.order == node.order) {
+                        order_available = false
+                        break
+                    }
+                }
+                if(!order_available) {
+                    node.order = NO_ORDER
+                    orderInputBox = createNodeOrderingBox(node)
+                }
+                else {
+                    orderInputBox = createNodeOrderingBox(node)
+                }
+            }
+            else if(nodes_on_right && which_side_to_copy_to == EXISTS_SIDE) {
+                //see if or the order is available - if so, snag it
+                order_available = true
+                for(n of nodes) {
+                    if(n.x < DIVIDING_LINE_LOC && n.order == node.order) {
+                        order_available = false
+                        break
+                    }
+                }
+                if(!order_available) {
+                    node.order = NO_ORDER
+                    orderInputBox = createNodeOrderingBox(node)
+                }
+                else {
+                    orderInputBox = createNodeOrderingBox(node)
+                }
+            }
+            else {
+                node.order = NO_ORDER  //will force a new ordering
+                orderInputBox = createNodeOrderingBox(node)
+            }
+            node_id_to_inputBox_map[node.id] = orderInputBox
+            if(orderings_are_being_displayed) {
+                orderInputBox.style.display = "initial"
+            }
+            else {
+                orderInputBox.style.display = "none"
+            }
+            nodes.add(node)
+        }
+        edges = edges.union(copied_edges)
+        selected_nodes = copied_nodes  
+        selected_edges = copied_edges  
+        copied_nodes = structuredClone(selected_nodes)
+        copied_edges = structuredClone(selected_edges)
+        //now redraw everything ()
+        redrawAll()
+        cutPending = false
+    }
+  }, true);
+
+  function delay(ms) {   //must be called by functions that are declared async
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        console.log('JSON copied to clipboard');
+    } 
+    catch (err) {
+        console.error('Failed to copy to clipboard: ', err);
+    }
+  }
+
+  async function readFromClipboard() {
+    try {
+        
+        const text = await navigator.clipboard.readText();
+        console.log('Text read from clipboard');
+        return text
+    } 
+    catch (err) {
+        console.error('Failed to read from clipboard: ', err);
+        return ""
+    }
+  }
+
+  function orderSelectedNodesLeftToRight() {
+    left_hand_node_orders = []
+    left_hand_nodes = []
+    right_hand_node_orders = []
+    right_hand_nodes = []
+    for(let node of selected_nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            if(node.order != NO_ORDER) {
+                left_hand_node_orders.push(node.order)
+                left_hand_nodes.push(node)
+            }
+        }
+        else {
+            if(node.order != NO_ORDER) {
+                right_hand_node_orders.push(node.order)
+                right_hand_nodes.push(node)
+            }
+        }
+    }
+    left_hand_nodes.sort((a,b)=> {
+        if(a.x < b.x || (a.x == b.x && a.y < b.y)) {
+            return -1
+        }
+        else if(a.x > b.x || (a.x == b.x && a.y > b.y)) {
+            return 1
+        } 
+        else { //should never happen -- means nodes are on top of each other
+            return 0
+        }
+    });
+    left_hand_node_orders.sort((a,b)=>a-b)
+    right_hand_nodes.sort((a,b)=> {
+        if(a.x < b.x || (a.x == b.x && a.y < b.y)) {
+            return -1
+        }
+        else if(a.x > b.x || (a.x == b.x && a.y > b.y)) {
+            return 1
+        } 
+        else { //should never happen -- means nodes are on top of each other
+            return 0
+        }
+    });
+    right_hand_node_orders.sort((a,b)=>a-b)
+    for(i = 0; i<left_hand_node_orders.length; i++) {
+        left_hand_nodes[i].order = left_hand_node_orders[i]
+    }
+    for(i = 0; i<right_hand_node_orders.length; i++) {
+        right_hand_nodes[i].order = right_hand_node_orders[i]
+    }
+  }
+
+  function contractSelectedNodes() {  
+    CONTRACTION_AMOUNT = 0.5
+    let left_hand_nodes = new Set()
+    let right_hand_nodes = new Set()
+    topMostLeft = canvas.height
+    leftMostLeft = canvas.width
+    topMostRight = canvas.height
+    leftMostRight = canvas.width
+    for(let node of selected_nodes) {
+        if(node.x < DIVIDING_LINE_LOC) {
+            left_hand_nodes.add(node)
+            if(node.x < leftMostLeft) {
+                leftMostLeft = node.x
+            }
+            if(node.y < topMostLeft) {
+                topMostLeft = node.y
+            }
+        }
+        else {
+            right_hand_nodes.add(node)
+            if(node.x < leftMostRight) {
+                leftMostRight = node.x
+            }
+            if(node.y < topMostRight) {
+                topMostRight = node.y
+            }
+        }
+    }
+    if(topMostLeft < canvas.height && leftMostLeft < canvas.width) {
+        //contract nodes on left
+        for(let node of left_hand_nodes) {
+            node.x = CONTRACTION_AMOUNT*leftMostLeft + (1-CONTRACTION_AMOUNT)*node.x
+            node.y = CONTRACTION_AMOUNT*topMostLeft + (1-CONTRACTION_AMOUNT)*node.y
+        }
+    }
+    if(topMostRight < canvas.height && leftMostRight < canvas.width) {
+        //contract nodes on right
+        for(let node of right_hand_nodes) {
+            node.x = CONTRACTION_AMOUNT*leftMostRight + (1-CONTRACTION_AMOUNT)*node.x
+            node.y = CONTRACTION_AMOUNT*topMostRight + (1-CONTRACTION_AMOUNT)*node.y
+        }
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height)  //since the redrawAll will just know about new node positions
+    redrawAll()
+    if(orderings_are_being_displayed) {
+        displayNodeOrderings()   //redisplays at new locations
+    }
+  }
+
+  
+
+</script>
+
+<style>
+    #contextMenu {
+        display: none;
+        position: fixed;
+        background-color: #f9f9f9;
+        border: 1px solid #ccc;
+        padding: 5px 0;
+        min-width: 100px;
+        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        z-index: 1000;
+    }
+
+    #contextMenu ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    #contextMenu li {
+        padding: 8px 15px;
+        cursor: pointer;
+    }
+
+    #contextMenu li:hover {
+        background-color: #e1e1e1;
+    }
+
+    nav ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      background-color: #f0f0f0;  /**Gives the top menu its background color **/
+      display: flex;
+    }
+
+    nav li {
+      margin-right: 10px;  /** Controls the padding between top menu items **/
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: Bold;
+      font-size: 12pt;
+    }
+
+    nav a {
+      display: block;
+      padding: 6px;  /** Controls the padding all around top menu items (top, bottom, left, right) **/
+      text-decoration: none;
+      color: #f0f0f0 /** #333;  **/
+    }
+</style>
+
+<!--<input type="text" id="fname" name="fname">-->
+
+</body>
+</html>
