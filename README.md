@@ -1,0 +1,1 @@
+A web application that lets a user create an Ehrenfeucht-Fraïssé on a pair of graphs and then play the game. The user can ask the computer to play the role of the Spoiler, Duplicator, or both Spoiler and Duplicator. 
